@@ -40,6 +40,12 @@ class WishlistConfig(AppConfig):
     }
 
     def ready(self):
-        from .signals import handlers
+        """
+        Connect signal handlers and perform any necessary initialization.
+        """
+        try:
+            from .signals import handlers
 
-        log.debug("{label} is ready.".format(label=self.label))
+            log.info(f"{self.label} is ready with signals connected.")
+        except ImportError:
+            log.warning(f"Could not import signal handlers for {self.label}")

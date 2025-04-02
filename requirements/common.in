@@ -18,3 +18,8 @@
 django-environ      # used in example_grades for overrides to openedx_plugin API
 reportlab
 django-ckeditor==6.7.1
+
+# Wishlist module dependencies
+model-utils>=4.2.0  # Required for TimeStampedModel in wishlist models
+djangorestframework>=3.12.0  # Required for API functionality in wishlist
+djangorestframework-jwt>=0.11.0  # Required for JWT authentication in wishlist API

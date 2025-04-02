@@ -9,6 +9,7 @@ from path import Path as path
 import environ
 import os
 from django.conf import settings
+from datetime import datetime
 
 # path to this file.
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -29,3 +30,53 @@ def plugin_settings(settings):
 
     # settings.SOCIAL_AUTH_REDIRECT_IS_HTTPS = True
     # SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+
+    # Wishlist specific settings
+    settings.WISHLIST_RATE_LIMIT = getattr(settings, "WISHLIST_RATE_LIMIT", "100/hour")
+
+    # JWT settings
+    settings.JWT_AUTH = getattr(settings, "JWT_AUTH", {})
+    settings.JWT_AUTH.update(
+        {
+            "JWT_VERIFY_EXPIRATION": True,
+            "JWT_EXPIRATION_DELTA": datetime.timedelta(days=7),
+            "JWT_ALLOW_REFRESH": True,
+            "JWT_REFRESH_EXPIRATION_DELTA": datetime.timedelta(days=7),
+        }
+    )
+
+    # REST Framework settings
+    settings.REST_FRAMEWORK = getattr(settings, "REST_FRAMEWORK", {})
+    settings.REST_FRAMEWORK.update(
+        {
+            "DEFAULT_AUTHENTICATION_CLASSES": [
+                "rest_framework_jwt.authentication.JSONWebTokenAuthentication",
+                "rest_framework.authentication.SessionAuthentication",
+                "oauth2_provider.contrib.rest_framework.OAuth2Authentication",
+            ],
+            "DEFAULT_PERMISSION_CLASSES": [
+                "rest_framework.permissions.IsAuthenticated",
+            ],
+            "DEFAULT_VERSIONING_CLASS": "rest_framework.versioning.URLPathVersioning",
+            "DEFAULT_VERSION": "v1",
+            "ALLOWED_VERSIONS": ["v1"],
+            "VERSION_PARAM": "version",
+        }
+    )
+
+    # CORS settings
+    settings.CORS_ALLOW_CREDENTIALS = True
+    settings.CORS_ORIGIN_WHITELIST = getattr(settings, "CORS_ORIGIN_WHITELIST", [])
+    settings.CORS_ALLOW_HEADERS = list(getattr(settings, "CORS_ALLOW_HEADERS", []))
+    settings.CORS_ALLOW_HEADERS.extend(
+        [
+            "accept",
+            "accept-encoding",
+            "authorization",
+            "content-type",
+            "origin",
+            "user-agent",
+            "x-csrftoken",
+            "x-requested-with",
+        ]
+    )
