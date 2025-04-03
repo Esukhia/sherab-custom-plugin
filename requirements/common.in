@@ -20,6 +20,8 @@ reportlab
 django-ckeditor==6.7.1
 
 # Wishlist module dependencies
-model-utils>=4.2.0  # Required for TimeStampedModel in wishlist models
-djangorestframework>=3.12.0  # Required for API functionality in wishlist
-djangorestframework-jwt>=0.11.0  # Required for JWT authentication in wishlist API
+djangorestframework>=3.12.0  # Required for REST API functionality
+django-oauth-toolkit>=1.5.0  # Required for OAuth2 authentication with mobile apps
+djangorestframework-jwt>=1.11.0  # Required for JWT authentication
+
+django-model-utils>=4.2.0  # Required for TimeStampedModel
