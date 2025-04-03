@@ -1,8 +1,6 @@
 """
 API Views for Wishlist functionality with enhanced mobile authentication
 """
-
-from datetime import timedelta
 from django.conf import settings
 from rest_framework import status
 from rest_framework.views import APIView
