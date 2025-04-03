@@ -14,7 +14,13 @@ from django.contrib.auth.models import User
 from django.utils.translation import gettext_lazy as _
 from model_utils.models import TimeStampedModel
 
-from openedx.core.djangoapps.content.course_overviews.models import CourseOverview
+
+def get_course_overview_model():
+    """
+    Lazy load CourseOverview model to avoid initialization issues
+    """
+    from openedx.core.djangoapps.content.course_overviews.models import CourseOverview
+    return CourseOverview
 
 
 class Wishlist(TimeStampedModel):
@@ -24,7 +30,7 @@ class Wishlist(TimeStampedModel):
 
     user = models.ForeignKey(User, on_delete=models.CASCADE, db_index=True)
     course = models.ForeignKey(
-        CourseOverview,
+        get_course_overview_model(),
         db_constraint=False,
         db_index=True,
         on_delete=models.CASCADE,
