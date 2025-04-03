@@ -6,7 +6,12 @@ from django.utils.decorators import method_decorator
 from django.http import HttpResponse, HttpResponseBadRequest, HttpResponseForbidden
 from django.utils.translation import gettext as _
 from django.contrib.auth.decorators import login_required
-from .models import Wishlist
+from opaque_keys.edx.keys import CourseKey
+from common.djangoapps.util.db import outer_atomic
+from common.djangoapps.util.json_request import JsonResponse
+from common.djangoapps.edxmako.shortcuts import render_to_response
+from openedx.core.djangoapps.content.course_overviews.models import CourseOverview
+from .models import *
 
 log = logging.getLogger(__name__)
 
@@ -29,10 +34,6 @@ class WishListChangeView(View):
             return HttpResponseBadRequest(_("Course id not specified"))
 
         try:
-            # Lazy imports to avoid initialization issues
-            from opaque_keys.edx.keys import CourseKey
-            from openedx.core.djangoapps.content.course_overviews.models import CourseOverview
-
             course_key = CourseKey.from_string(request.POST.get("course_id"))
             course = CourseOverview.get_from_id(course_key)
         except Exception as e:
@@ -60,9 +61,6 @@ class WishListChangeView(View):
 
 @login_required
 def wishlist_view(request):
-    # Lazy import to avoid initialization issues
-    from common.djangoapps.edxmako.shortcuts import render_to_response
-
     # Fetch all wishlisted courses for the logged-in user
     wishlisted_courses = Wishlist.objects.filter(user=request.user).select_related("course")
 

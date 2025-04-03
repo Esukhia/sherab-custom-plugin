@@ -6,25 +6,35 @@ import logging
 
 from django.apps import AppConfig
 
+from edx_django_utils.plugins import PluginSettings, PluginURLs
+from openedx.core.djangoapps.plugins.constants import ProjectType, SettingsType
+
 log = logging.getLogger(__name__)
 
 
 class WishlistConfig(AppConfig):
     name = "wishlist"
     label = "wishlist"
+
+    # This is the text that appears in the Django admin console in all caps
+    # as the title box encapsulating all Django app models that are registered
+    # in admin.py.
     verbose_name = "Course Wishlist"
 
+    # See: https://edx.readthedocs.io/projects/edx-django-utils/en/latest/edx_django_utils.plugins.html
     plugin_app = {
-        "url_config": {
-            "lms.djangoapp": {
-                "namespace": name,
-                "regex": "^",
-                "relative_path": "urls",
+        PluginURLs.CONFIG: {
+            ProjectType.LMS: {
+                PluginURLs.NAMESPACE: name,
+                PluginURLs.REGEX: "^",
+                PluginURLs.RELATIVE_PATH: "urls",
             }
         },
-        "settings_config": {
-            "lms.djangoapp": {
-                "common": {"relative_path": "settings.common"},
+        PluginSettings.CONFIG: {
+            ProjectType.LMS: {
+                # uncomment these to activate
+                SettingsType.PRODUCTION: {PluginSettings.RELATIVE_PATH: "settings.production"},
+                SettingsType.COMMON: {PluginSettings.RELATIVE_PATH: "settings.common"},
             }
         },
     }
@@ -33,18 +43,9 @@ class WishlistConfig(AppConfig):
         """
         Connect signal handlers and perform any necessary initialization.
         """
-        from django.conf import settings
-        
-        # Only proceed if Django is fully configured
-        if not settings.configured:
-            return
-
         try:
-            # Only import signals if we're in LMS context
-            if getattr(settings, 'SERVICE_VARIANT', None) == 'lms':
-                from .signals import handlers
-                log.info(f"{self.label} is ready with signals connected.")
-        except ImportError as e:
-            log.warning(f"Could not import signal handlers for {self.label}: {str(e)}")
-        except Exception as e:
-            log.exception(f"Error initializing {self.label}: {str(e)}")
+            from .signals import handlers
+
+            log.info(f"{self.label} is ready with signals connected.")
+        except ImportError:
+            log.warning(f"Could not import signal handlers for {self.label}")

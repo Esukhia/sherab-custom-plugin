@@ -12,6 +12,9 @@ from rest_framework.exceptions import ValidationError, NotFound
 from rest_framework_jwt.authentication import JSONWebTokenAuthentication
 from rest_framework.authentication import OAuth2Authentication
 from rest_framework_jwt.settings import api_settings
+from opaque_keys.edx.keys import CourseKey
+from opaque_keys import InvalidKeyError
+from openedx.core.djangoapps.content.course_overviews.models import CourseOverview
 from .models import Wishlist
 
 # Constants for error messages and codes
@@ -63,10 +66,6 @@ class WishlistAPIView(APIView):
         """
         Helper method to get course or raise 404
         """
-        from opaque_keys.edx.keys import CourseKey
-        from opaque_keys import InvalidKeyError
-        from openedx.core.djangoapps.content.course_overviews.models import CourseOverview
-
         try:
             course_key = CourseKey.from_string(course_id)
             return CourseOverview.get_from_id(course_key)
@@ -152,9 +151,6 @@ class WishlistAPIView(APIView):
         Returns:
             Response with success or error message
         """
-        from opaque_keys.edx.keys import CourseKey
-        from opaque_keys import InvalidKeyError
-
         try:
             course_key = CourseKey.from_string(course_id)
         except InvalidKeyError:
