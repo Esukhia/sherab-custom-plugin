@@ -4,20 +4,19 @@ Common Pluggable Django App settings
 Handling of environment variables, see: https://django-environ.readthedocs.io/en/latest/
 to convert .env to yml see: https://django-environ.readthedocs.io/en/latest/tips.html#docker-style-file-based-variables
 """
-
 from path import Path as path
 import environ
 import os
 from django.conf import settings
-from datetime import datetime
+from datetime import timedelta
 
 # path to this file.
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 environ.Env.read_env(os.path.join(BASE_DIR, ".env"))
 
 
-APP_ROOT = path(__file__).abspath().dirname().dirname()  # /blah/blah/blah/.../example_grades
-REPO_ROOT = APP_ROOT.dirname()  # /blah/blah/blah/.../example-digital-learning-openedx
+APP_ROOT = path(__file__).abspath().dirname().dirname()  # /wishlist
+REPO_ROOT = APP_ROOT.dirname()  # /sherab-custom-plugin
 TEMPLATES_DIR = APP_ROOT / "templates"
 
 
@@ -39,9 +38,10 @@ def plugin_settings(settings):
     settings.JWT_AUTH.update(
         {
             "JWT_VERIFY_EXPIRATION": True,
-            "JWT_EXPIRATION_DELTA": datetime.timedelta(days=7),
+            "JWT_EXPIRATION_DELTA": timedelta(days=7),
             "JWT_ALLOW_REFRESH": True,
-            "JWT_REFRESH_EXPIRATION_DELTA": datetime.timedelta(days=7),
+            "JWT_REFRESH_EXPIRATION_DELTA": timedelta(days=7),
+            "JWT_AUTH_COOKIE": "wishlist-auth",  # Added cookie setting
         }
     )
 
