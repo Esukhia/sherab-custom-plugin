@@ -14,4 +14,7 @@ app_name = "course_partnerships"
 urlpatterns = [
     path("schools/<slug:slug>/", PartnerDetailView.as_view(), name="partner-detail"),
     path("schools/<slug:partner_slug>/<slug:center_slug>/", CenterDetailView.as_view(), name="center-detail"),
+
+    # Endpoint to retrieve all partners with their names and logo URLs
+    path("api/partners/", PartnerListAPIView.as_view(), name="partner-list"),
 ]

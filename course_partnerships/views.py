@@ -1,14 +1,15 @@
 import logging
-from django.views.generic import View
-from django.db.models import Count
-from django.conf import settings
-from django.utils.decorators import method_decorator
-from django.http import Http404
-from common.djangoapps.util.json_request import JsonResponse
+
 from common.djangoapps.edxmako.shortcuts import render_to_response
+from django.db.models import Count
+from django.http import Http404
+from django.views.generic import View
 from openedx.core.djangoapps.content.course_overviews.models import CourseOverview
+from rest_framework.response import Response
+from rest_framework.views import APIView
 
 from .models import *
+from .serializers import PartnerOrganizationMappingSerializer
 
 log = logging.getLogger(__name__)
 
@@ -64,3 +65,45 @@ class CenterDetailView(View):
         )
         context = {"partner": partner, "center": center, "categories": categories}
         return render_to_response("course_partnerships/center-details.html", context)
+
+
+class PartnerListAPIView(APIView):
+    """
+    API endpoint to retrieve partner-organization mappings.
+
+    Each entry in the response corresponds to a unique pair of:
+        - Partner (name + logo)
+        - Organization (short_name)
+
+    Only mappings marked with `show_in_mobile_app=True` are returned.
+
+    Method:
+        GET
+
+    Example Response (200 OK):
+        [
+            {
+                "partner_name": "Partner Name",
+                "logo": "https://yourdomain.com/../partner_logo.png",
+                "organization": "org1"
+            },
+            ...
+        ]
+    """
+
+    # This API is intended for public access, so no authentication is required.
+    authentication_classes = []
+
+    def get(self, request):
+        """
+        Handles GET requests to retrieve visible partner-organization mappings.
+
+        Args:
+            request (HttpRequest): The incoming HTTP request.
+
+        Returns:
+            Response: A list of serialized mappings.
+        """
+        mappings = PartnerOrganizationMapping.objects.filter(show_in_mobile_app=True)
+        serializer = PartnerOrganizationMappingSerializer(mappings, many=True, context={"request": request})
+        return Response(serializer.data)

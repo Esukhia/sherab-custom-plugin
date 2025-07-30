@@ -5,17 +5,17 @@ If you make changes to this model, be sure to create an appropriate migration
 file and check it in at the same time as your model changes. To do that,
 
 1. Go to the edx-platform dir
-2. ./manage.py lms makemigrations --settings=production 
+2. ./manage.py lms makemigrations --settings=production
 3. ./manage.py lms migrate --settings=production
 """
 
-from django.db import models
-from django.contrib.auth.models import User
-from django.utils.translation import gettext_lazy as _
 from ckeditor.fields import RichTextField
+from django.db import models
+from django.utils.translation import gettext_lazy as _
 from model_utils.models import TimeStampedModel
-
 from openedx.core.djangoapps.content.course_overviews.models import CourseOverview
+from organizations.models import Organization
+
 from .validators import validate_bannner_extension
 
 
@@ -147,3 +147,43 @@ class EnhancedCourse(TimeStampedModel):
         """
         course, created = cls.objects.get_or_create(course_id=course_id)
         course.save()
+
+
+class PartnerOrganizationMapping(TimeStampedModel):
+    """
+    Mapping model between Partners and Organizations.
+
+    Each record represents a unique relationship between a Partner and an Organization.
+    This mapping is useful for defining which organizations a partner is associated with,
+    and whether that relationship should be displayed in the mobile app.
+
+    Fields:
+        partner (ForeignKey): Reference to the Partner.
+        organization (ForeignKey): Reference to the Organization.
+        show_in_mobile_app (Boolean): If True, this mapping will be shown in the mobile app.
+    """
+
+    partner = models.ForeignKey(
+        Partner,
+        on_delete=models.CASCADE,
+        related_name="organization_mappings",
+        help_text="The partner associated with the organization.",
+    )
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name="partner_mappings",
+        help_text="The organization linked to the partner.",
+    )
+    show_in_mobile_app = models.BooleanField(
+        default=False,
+        help_text="Controls whether this partner-organization mapping is shown in the mobile app.",
+    )
+
+    def __str__(self):
+        return f"{self.partner.name} ↔ {self.organization.short_name}"
+
+    class Meta:
+        unique_together = ("partner", "organization")
+        verbose_name = "Partner-Organization Mapping"
+        verbose_name_plural = "Partner-Organization Mappings"
