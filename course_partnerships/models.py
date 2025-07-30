@@ -161,6 +161,7 @@ class PartnerOrganizationMapping(TimeStampedModel):
         partner (ForeignKey): Reference to the Partner.
         organization (ForeignKey): Reference to the Organization.
         show_in_mobile_app (Boolean): If True, this mapping will be shown in the mobile app.
+        display_name (CharField): Optional override for the partner's name in the UI.
     """
 
     partner = models.ForeignKey(
@@ -178,6 +179,12 @@ class PartnerOrganizationMapping(TimeStampedModel):
     show_in_mobile_app = models.BooleanField(
         default=False,
         help_text="Controls whether this partner-organization mapping is shown in the mobile app.",
+    )
+    display_name = models.CharField(
+        max_length=255,
+        null=True,
+        blank=True,
+        help_text="Custom name to display for the partner in this specific mapping.",
     )
 
     def __str__(self):

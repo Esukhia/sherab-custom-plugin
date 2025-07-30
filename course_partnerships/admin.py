@@ -27,9 +27,14 @@ class EnhancedCourseAdmin(admin.ModelAdmin):
 
 
 class PartnerOrganizationMappingAdmin(admin.ModelAdmin):
-    list_display = ("partner", "organization", "show_in_mobile_app")
+    list_display = ("partner", "organization", "display_name", "show_in_mobile_app")
     list_filter = ("show_in_mobile_app", "partner", "organization")
-    search_fields = ("partner__name", "organization__name", "organization__short_name")
+    search_fields = (
+        "partner__name",
+        "organization__name",
+        "organization__short_name",
+        "display_name",
+    )
 
 
 admin.site.register(Partner, PartnerAdmin)
