@@ -35,7 +35,14 @@ class PartnerDetailView(View):
             .filter(num_courses__gt=0)
         )
         partner_courses = CourseOverview.objects.filter(enhancedcourse__partner=partner)
-        context = {"partner": partner, "centers": centers, "categories": categories, "partner_courses": partner_courses}
+        course_creators = CourseCreator.objects.filter(partner=partner)
+        context = {
+            "partner": partner,
+            "centers": centers,
+            "categories": categories,
+            "partner_courses": partner_courses,
+            "course_creators": course_creators,
+        }
         return render_to_response("course_partnerships/partner-details.html", context)
 
 
