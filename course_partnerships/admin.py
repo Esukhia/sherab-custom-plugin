@@ -37,8 +37,31 @@ class PartnerOrganizationMappingAdmin(admin.ModelAdmin):
     )
 
 
+class CourseCreatorAdmin(admin.ModelAdmin):
+    list_display = ("name", "partner", "title", "experience")
+    list_filter = ("partner",)
+    search_fields = ("name", "title", "partner__name")
+    raw_id_fields = ("partner",)
+    readonly_fields = ("created", "modified")
+    fieldsets = (
+        (
+            "Basic Information",
+            {
+                "fields": ("partner", "name", "profile_picture"),
+            },
+        ),
+        (
+            "Professional Details",
+            {
+                "fields": ("title", "experience", "bio"),
+            },
+        ),
+    )
+
+
 admin.site.register(Partner, PartnerAdmin)
 admin.site.register(Category, CategoryAdmin)
 admin.site.register(EnhancedCourse, EnhancedCourseAdmin)
 admin.site.register(Center, CenterAdmin)
 admin.site.register(PartnerOrganizationMapping, PartnerOrganizationMappingAdmin)
+admin.site.register(CourseCreator, CourseCreatorAdmin)

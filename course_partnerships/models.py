@@ -194,3 +194,58 @@ class PartnerOrganizationMapping(TimeStampedModel):
         unique_together = ("partner", "organization")
         verbose_name = "Partner-Organization Mapping"
         verbose_name_plural = "Partner-Organization Mappings"
+
+
+class CourseCreator(TimeStampedModel):
+    """
+    Model for storing course creator information.
+
+    This model captures details about course creators/instructors including
+    their profile picture, name, title, experience, and biography.
+    """
+
+    partner = models.ForeignKey(
+        Partner,
+        on_delete=models.CASCADE,
+        db_index=True,
+        related_name="course_creators",
+        help_text=_("School/Partner this course creator is associated with"),
+    )
+    name = models.CharField(
+        max_length=255,
+        db_index=True,
+        help_text=_("Full name of the course creator"),
+    )
+    title = models.CharField(
+        max_length=255,
+        blank=True,
+        null=True,
+        help_text=_("Professional title or designation (e.g., Professor, Senior Instructor)"),
+    )
+    experience = models.PositiveIntegerField(
+        blank=True,
+        null=True,
+        help_text=_("Years of experience (e.g., 5)"),
+    )
+    bio = models.TextField(
+        "Biography",
+        max_length=2000,
+        blank=True,
+        null=True,
+        help_text=_("Detailed biography of the course creator (max 2000 characters)"),
+    )
+    profile_picture = models.ImageField(
+        "Profile Picture",
+        upload_to="course_creators/",
+        blank=True,
+        null=True,
+        help_text=_("Upload only image file with .png, .jpeg, .jpg extension."),
+        validators=[validate_bannner_extension],
+    )
+
+    def __str__(self):
+        return self.name
+
+    class Meta:
+        verbose_name = "Course Creator"
+        verbose_name_plural = "Course Creators"
