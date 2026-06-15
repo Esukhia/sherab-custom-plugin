@@ -51,7 +51,7 @@ setup(
     name="custom-extensions",
     version=__version__,
     packages=find_packages(),
-    package_data={"": ["*.html"]},  # include any Mako templates found in this repo.
+    package_data={"": ["*.html", "*.md", "skill/*.md", "skill/references/*.md"]},  # Mako templates + bundled skill prompt.
     include_package_data=True,
     license="Proprietary",
     description="Django plugin to enhance advanced/extra features.",
@@ -88,6 +88,7 @@ setup(
         "cms.djangoapp": [
             "course_partnerships = course_partnerships.apps:CoursePartnershipsConfig",
             "user_extension = user_extension.apps:UserExtensionConfig",
+            "ai_course_creator = ai_course_creator.apps:AiCourseCreatorConfig",
         ],
     },
 )
