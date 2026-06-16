@@ -1,7 +1,7 @@
 from rest_framework import serializers
 
 from .models import ChatMessage, ChatSession, UploadedMaterial
-from .services.gemini_client import strip_course_json, strip_phase_marker
+from .services.llm_client import strip_course_json, strip_phase_marker
 
 
 class ChatMessageSerializer(serializers.ModelSerializer):

@@ -12,9 +12,9 @@ def plugin_settings(settings):
     ``configuration_plugin`` patch, so there is nothing to override here beyond
     making sure the attributes exist.
     """
-    if not hasattr(settings, "GEMINI_API_KEY"):
-        settings.GEMINI_API_KEY = ""
-    if not hasattr(settings, "GEMINI_MODEL"):
-        settings.GEMINI_MODEL = "gemini-2.5-pro"
+    if not hasattr(settings, "GROQ_API_KEY"):
+        settings.GROQ_API_KEY = ""
+    if not hasattr(settings, "GROQ_MODEL"):
+        settings.GROQ_MODEL = "llama-3.3-70b-versatile"
     if not hasattr(settings, "AI_COURSE_CREATOR_MAX_UPLOAD_BYTES"):
         settings.AI_COURSE_CREATOR_MAX_UPLOAD_BYTES = 25 * 1024 * 1024

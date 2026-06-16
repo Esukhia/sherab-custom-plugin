@@ -1,17 +1,18 @@
 """
-Thin wrapper around the Google Gemini API for the Sherab course-creator chatbot.
+Thin wrapper around the LLM API for the Sherab course-creator chatbot.
 
 The bundled skill (``skill/SKILL.md`` + ``skill/references/*.md``) is used as the
 system instruction so the model behaves exactly like the "Sherab" persona, runs
 the 5-phase flow, and emits a ``===COURSE_JSON_START===...===COURSE_JSON_END===``
 block in Phase 5.
 
-Credentials come from Django settings (``GEMINI_API_KEY`` / ``GEMINI_MODEL``),
+Credentials come from Django settings (``GROQ_API_KEY`` / ``GROQ_MODEL``),
 which Tutor injects from ``config.yml``. See settings/common.py.
 """
 
 import logging
 import os
+import time
 from functools import lru_cache
 
 from django.conf import settings
@@ -48,12 +49,13 @@ def strip_phase_marker(text):
     return _phase_re().sub("", text).strip()
 
 
-class GeminiNotConfigured(Exception):
-    """Raised when no Gemini API key is available."""
+# Keep original exception names so views.py needs no changes.
+class LLMNotConfigured(Exception):
+    """Raised when no API key is available."""
 
 
-class GeminiError(Exception):
-    """Raised for a Gemini API failure, with a user-friendly message."""
+class LLMError(Exception):
+    """Raised for an LLM API failure, with a user-friendly message."""
 
 
 @lru_cache(maxsize=1)
@@ -63,14 +65,17 @@ def _load_system_instruction():
 
     Cached for the process lifetime; the skill content is static.
     """
+    import re as _re  # pylint: disable=import-outside-toplevel
     parts = []
     skill_md = os.path.join(SKILL_DIR, "SKILL.md")
     try:
         with open(skill_md, encoding="utf-8") as handle:
-            parts.append(handle.read())
+            raw = handle.read()
+        # Strip YAML frontmatter (--- ... ---) before sending to the model.
+        stripped = _re.sub(r"^---\n.*?\n---\n", "", raw, flags=_re.DOTALL)
+        parts.append(stripped)
     except OSError:
         log.exception("ai_course_creator: could not read SKILL.md at %s", skill_md)
-        # Minimal fallback so the assistant is still usable.
         parts.append(
             "You are Sherab, a warm course-design companion inside Open edX Studio. "
             "Guide the creator through designing a course, one question at a time."
@@ -91,44 +96,71 @@ def _load_system_instruction():
 
 
 def _get_api_key():
-    key = getattr(settings, "GEMINI_API_KEY", "") or os.environ.get("GEMINI_API_KEY", "")
+    key = getattr(settings, "GROQ_API_KEY", "") or os.environ.get("GROQ_API_KEY", "")
     if not key:
-        raise GeminiNotConfigured(
-            "GEMINI_API_KEY is not set. Add it to Tutor config.yml and re-run `tutor config save`."
+        raise LLMNotConfigured(
+            "GROQ_API_KEY is not set. Add it to Tutor config.yml and re-run `tutor config save`."
         )
     return key
 
 
 def _get_model_name():
-    return getattr(settings, "GEMINI_MODEL", "") or os.environ.get("GEMINI_MODEL", "gemini-2.5-pro")
+    return getattr(settings, "GROQ_MODEL", "") or os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
 
 
-def _build_model():
-    """Instantiate a configured ``GenerativeModel`` with the skill system prompt."""
-    import google.generativeai as genai  # imported lazily so the app loads without the dep
-
-    genai.configure(api_key=_get_api_key())
-    return genai.GenerativeModel(
-        model_name=_get_model_name(),
-        system_instruction=_load_system_instruction(),
-    )
+def _build_client():
+    """Instantiate a Groq client (imported lazily so the app loads without the dep)."""
+    from groq import Groq  # pylint: disable=import-outside-toplevel
+    return Groq(api_key=_get_api_key())
 
 
-def _to_gemini_history(messages):
+def _to_messages(history, materials_context=""):
     """
-    Convert our stored chat messages into Gemini's ``contents`` format.
-
-    ``messages`` is an iterable of dicts/objects with ``role`` ("user" |
-    "assistant") and ``content``. Gemini uses the role name "model" for the
-    assistant.
+    Convert our stored chat messages into OpenAI-format messages with the
+    system instruction prepended.
     """
-    history = []
-    for message in messages:
+    messages = [{"role": "system", "content": _load_system_instruction()}]
+    for i, message in enumerate(history):
         role = message["role"] if isinstance(message, dict) else message.role
         content = message["content"] if isinstance(message, dict) else message.content
-        gemini_role = "model" if role == "assistant" else "user"
-        history.append({"role": gemini_role, "parts": [content]})
-    return history
+        # Groq (like OpenAI) uses "assistant", not "model".
+        # Prepend materials digest to the final user turn.
+        if materials_context and i == len(history) - 1 and role == "user":
+            content = (
+                f"[Course materials the creator has shared so far:\n{materials_context}\n]\n\n{content}"
+            )
+        messages.append({"role": role, "content": content})
+    return messages
+
+
+def _is_rate_limit(exc):
+    name = type(exc).__name__
+    return name == "RateLimitError" or "429" in str(exc) or "rate_limit" in str(exc).lower()
+
+
+def _start_stream_with_retry(client, messages):
+    """Start a streaming request with up to 2 retries on rate limit."""
+    delays = [10, 25]
+    for delay in delays:
+        try:
+            return client.chat.completions.create(
+                messages=messages,
+                model=_get_model_name(),
+                stream=True,
+                temperature=0.7,
+            )
+        except Exception as exc:  # pylint: disable=broad-except
+            if _is_rate_limit(exc):
+                log.warning("ai_course_creator: Groq rate limited, retrying in %ds", delay)
+                time.sleep(delay)
+            else:
+                raise
+    # Final attempt — let exceptions propagate to the caller.
+    return client.chat.completions.create(
+        messages=messages,
+        model=_get_model_name(),
+        stream=True,
+    )
 
 
 def stream_reply(history, materials_context=""):
@@ -144,47 +176,30 @@ def stream_reply(history, materials_context=""):
     Yields:
         str chunks of assistant text.
     """
-    model = _build_model()
-    contents = _to_gemini_history(history)
-
-    if materials_context and contents:
-        # Prepend the materials digest to the final user turn so the model can
-        # use it without us inventing a fake conversation turn.
-        contents[-1]["parts"].insert(
-            0,
-            f"[Course materials the creator has shared so far:\n{materials_context}\n]\n\n",
-        )
+    client = _build_client()
+    messages = _to_messages(history, materials_context)
 
     try:
-        response = model.generate_content(contents, stream=True)
-        for chunk in response:
-            # Pull text from the candidate parts directly. We avoid the
-            # ``chunk.text`` quick accessor because it RAISES (rather than
-            # returning empty) for chunks that carry no Part — which happens
-            # routinely on the final chunk (finish_reason=STOP) and on
-            # safety-filtered responses.
-            for candidate in (getattr(chunk, "candidates", None) or []):
-                content = getattr(candidate, "content", None)
-                for part in (getattr(content, "parts", None) or []):
-                    text = getattr(part, "text", "")
-                    if text:
-                        yield text
-    except GeminiError:
+        stream = _start_stream_with_retry(client, messages)
+        for chunk in stream:
+            text = chunk.choices[0].delta.content or ""
+            if text:
+                yield text
+    except LLMError:
         raise
     except Exception as exc:  # pylint: disable=broad-except
-        raise GeminiError(_friendly_gemini_error(exc)) from exc
+        raise LLMError(_friendly_llm_error(exc)) from exc
 
 
-def _friendly_gemini_error(exc):
-    """Turn a raw Gemini/Google API exception into a short, user-facing message."""
-    name = type(exc).__name__
-    if name in ("ResourceExhausted",) or "429" in str(exc):
+def _friendly_llm_error(exc):
+    """Turn a raw API exception into a short, user-facing message."""
+    if _is_rate_limit(exc):
         return "Sherab is busy right now — the AI service is rate-limited. Please wait a moment and try again."
-    if name in ("PermissionDenied", "Unauthenticated") or "401" in str(exc) or "403" in str(exc):
+    if "401" in str(exc) or "403" in str(exc) or "authentication" in str(exc).lower():
         return "Sherab couldn't connect to the AI service. Please contact your platform administrator."
-    if name in ("NotFound",) or "404" in str(exc):
+    if "404" in str(exc):
         return "Sherab couldn't connect to the AI service. Please contact your platform administrator."
-    log.exception("ai_course_creator: unexpected Gemini error")
+    log.exception("ai_course_creator: unexpected LLM error")
     return "Sherab ran into a problem. Please try again in a moment."
 
 
@@ -194,7 +209,7 @@ def extract_course_json(text):
 
     Returns the parsed dict, or ``None`` if no valid block is present.
     """
-    import json
+    import json  # pylint: disable=import-outside-toplevel
 
     if COURSE_JSON_START not in text or COURSE_JSON_END not in text:
         return None

@@ -26,9 +26,9 @@ from rest_framework.views import APIView
 from .models import ChatMessage, ChatSession, UploadedMaterial
 from .serializers import ChatSessionSerializer
 from .services import course_builder, materials
-from .services.gemini_client import (
-    GeminiError,
-    GeminiNotConfigured,
+from .services.llm_client import (
+    LLMError,
+    LLMNotConfigured,
     extract_course_json,
     extract_phase_marker,
     stream_reply,
@@ -88,7 +88,7 @@ class ChatView(APIView):
                 for chunk in stream_reply(history, materials_context):
                     collected.append(chunk)
                     yield _sse({"type": "token", "text": chunk})
-            except (GeminiNotConfigured, GeminiError) as exc:
+            except (LLMNotConfigured, LLMError) as exc:
                 yield _sse({"type": "error", "error": str(exc)})
                 return
             except Exception:  # pylint: disable=broad-except

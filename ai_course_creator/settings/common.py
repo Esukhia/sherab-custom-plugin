@@ -14,11 +14,11 @@ def plugin_settings(settings):
     environment variables / sensible defaults so the app also works in tests and
     in environments where the patch is not applied.
     """
-    settings.GEMINI_API_KEY = getattr(
-        settings, "GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY", "")
+    settings.GROQ_API_KEY = getattr(
+        settings, "GROQ_API_KEY", os.environ.get("GROQ_API_KEY", "")
     )
-    settings.GEMINI_MODEL = getattr(
-        settings, "GEMINI_MODEL", os.environ.get("GEMINI_MODEL", "gemini-2.5-pro")
+    settings.GROQ_MODEL = getattr(
+        settings, "GROQ_MODEL", os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
     )
 
     # Hard limits for uploaded course materials (bytes). 25 MB by default.
