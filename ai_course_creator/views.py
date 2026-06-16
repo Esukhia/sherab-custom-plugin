@@ -4,7 +4,7 @@ API endpoints for the Sherab AI course-creator chatbot (Studio / CMS side).
 Endpoints (mounted under the app namespace, see urls.py):
     POST  api/ai-course-creator/chat/      -> stream an assistant reply (SSE)
     POST  api/ai-course-creator/upload/    -> add a material (file / link / text)
-    POST  api/ai-course-creator/apply/     -> build course structure from the outline
+    POST  api/ai-course-creator/generate/  -> generate + write the course (SSE)
     GET   api/ai-course-creator/session/   -> fetch the session (resume)
 
 Auth: JWT (sent by the authoring MFE) or session. All endpoints require an
@@ -25,7 +25,7 @@ from rest_framework.views import APIView
 
 from .models import ChatMessage, ChatSession, UploadedMaterial
 from .serializers import ChatSessionSerializer
-from .services import course_builder, materials
+from .services import course_builder, generator, materials
 from .services.llm_client import (
     LLMError,
     LLMNotConfigured,
@@ -80,7 +80,10 @@ class ChatView(APIView):
             # Phase-1 greeting per the skill.
             history = [{"role": "user", "content": "Let's start creating my course."}]
 
-        materials_context = materials.build_context(session.materials.all())
+        # Chat only needs to know *which* materials exist (names), so Sherab can
+        # acknowledge them. The full extracted text is sent only at generation
+        # time — see services/generator.py — which keeps chat requests small.
+        materials_context = materials.build_names_summary(session.materials.all())
 
         def event_stream():
             collected = []
@@ -196,40 +199,124 @@ class UploadMaterialView(APIView):
         )
 
 
-class ApplyOutlineView(APIView):
-    """Build the real course structure from the generated outline."""
+class GenerateCourseView(APIView):
+    """
+    Generate the full course (structure + content) and write it into the course
+    outline as draft blocks, streaming progress over SSE.
+
+    Flow: generate skeleton -> per-section content -> store outline -> write to
+    the modulestore (draft). The generated outline is cached on the session so a
+    failed *write* can be retried without re-paying for generation. A failed
+    write rolls back any partial structure (see course_builder).
+    """
 
     authentication_classes = AUTHENTICATION_CLASSES
     permission_classes = (IsAuthenticated,)
 
     def post(self, request):
+        from opaque_keys import InvalidKeyError
+        from opaque_keys.edx.keys import CourseKey
+
+        if not _feature_enabled():
+            return Response(
+                {"error": "The AI course creator is disabled."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
         course_id = request.data.get("course_id")
         if not course_id:
             return Response({"error": "course_id is required."}, status=status.HTTP_400_BAD_REQUEST)
 
-        session = _get_or_create_session(request.user, course_id)
-        course_json = request.data.get("course_json") or session.course_json
-        if not course_json:
-            return Response(
-                {"error": "No generated outline is available yet."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
         try:
-            result = course_builder.apply_course_json(course_id, request.user, course_json)
-        except course_builder.CourseBuildError as exc:
-            return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-        except Exception:  # pylint: disable=broad-except
-            log.exception("ai_course_creator: apply outline failed")
+            course_key = CourseKey.from_string(course_id)
+        except InvalidKeyError:
+            return Response({"error": "Invalid course id."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not course_builder.user_can_author(request.user, course_key):
             return Response(
-                {"error": "Could not build the course structure."},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                {"error": "You do not have permission to edit this course."},
+                status=status.HTTP_403_FORBIDDEN,
             )
 
-        session.course_json = course_json
-        session.status = ChatSession.Status.APPLIED
-        session.save(update_fields=["course_json", "status", "modified"])
-        return Response(result, status=status.HTTP_200_OK)
+        session = _get_or_create_session(request.user, course_id)
+        user = request.user
+
+        def _set_status(generation_status, error=""):
+            session.generation_status = generation_status
+            session.generation_error = error
+            session.save(update_fields=["generation_status", "generation_error", "modified"])
+
+        def event_stream():
+            # 1. Generate (skeleton + per-section content).
+            _set_status(ChatSession.GenerationStatus.GENERATING)
+            course = None
+            try:
+                for event in generator.iter_generate(session):
+                    if event["type"] == "progress":
+                        yield _sse({"type": "progress", "message": event["message"]})
+                    elif event["type"] == "outline":
+                        course = event["course"]
+            except (LLMNotConfigured, LLMError, generator.GenerationError) as exc:
+                _set_status(ChatSession.GenerationStatus.FAILED, str(exc))
+                yield _sse({"type": "error", "error": str(exc)})
+                return
+            except Exception:  # pylint: disable=broad-except
+                log.exception("ai_course_creator: generation failed")
+                msg = "Sherab couldn't generate the course. Please try again."
+                _set_status(ChatSession.GenerationStatus.FAILED, msg)
+                yield _sse({"type": "error", "error": msg})
+                return
+
+            if not course:
+                msg = "Sherab couldn't generate the course. Please try again."
+                _set_status(ChatSession.GenerationStatus.FAILED, msg)
+                yield _sse({"type": "error", "error": msg})
+                return
+
+            # Cache the generated outline so a write-only retry is free.
+            session.course_json = course
+            session.status = ChatSession.Status.GENERATED
+            session.save(update_fields=["course_json", "status", "modified"])
+
+            # If a previous run already wrote sections, clear them first so a
+            # retry/regenerate never duplicates content.
+            if session.created_section_locators:
+                course_builder.delete_sections(
+                    course_id, user, session.created_section_locators
+                )
+                session.created_section_locators = []
+                session.save(update_fields=["created_section_locators", "modified"])
+
+            # 2. Write to the course outline (draft).
+            _set_status(ChatSession.GenerationStatus.WRITING)
+            yield _sse({"type": "progress", "message": "Adding everything to your course outline…"})
+            try:
+                result = course_builder.apply_course_json(course_id, user, course)
+            except course_builder.CourseBuildError as exc:
+                _set_status(ChatSession.GenerationStatus.FAILED, str(exc))
+                yield _sse({"type": "error", "error": str(exc)})
+                return
+            except Exception:  # pylint: disable=broad-except
+                log.exception("ai_course_creator: write failed")
+                msg = "Could not add the course to the outline. Please try again."
+                _set_status(ChatSession.GenerationStatus.FAILED, msg)
+                yield _sse({"type": "error", "error": msg})
+                return
+
+            session.created_section_locators = result.get("sectionLocators") or []
+            session.status = ChatSession.Status.APPLIED
+            session.generation_status = ChatSession.GenerationStatus.DONE
+            session.generation_error = ""
+            session.save(update_fields=[
+                "created_section_locators", "status", "generation_status",
+                "generation_error", "modified",
+            ])
+            yield _sse({"type": "done", "counts": result.get("counts", {})})
+
+        response = StreamingHttpResponse(event_stream(), content_type="text/event-stream")
+        response["Cache-Control"] = "no-cache"
+        response["X-Accel-Buffering"] = "no"  # disable nginx buffering for SSE
+        return response
 
 
 class SessionView(APIView):
@@ -268,6 +355,22 @@ class MaterialDetailView(APIView):
         if not deleted:
             return Response(status=status.HTTP_404_NOT_FOUND)
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class ConfigView(APIView):
+    """Expose the feature flag so the Studio outline can show/hide the launch button."""
+
+    authentication_classes = AUTHENTICATION_CLASSES
+    permission_classes = (IsAuthenticated,)
+
+    def get(self, request):
+        return Response({"enabled": _feature_enabled()})
+
+
+def _feature_enabled():
+    from django.conf import settings
+
+    return bool(getattr(settings, "AI_COURSE_CREATOR_ENABLED", True))
 
 
 def _max_upload_bytes():

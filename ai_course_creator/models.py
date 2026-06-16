@@ -31,6 +31,13 @@ class ChatSession(TimeStampedModel):
         GENERATED = "generated", _("Course generated")
         APPLIED = "applied", _("Applied to course")
 
+    class GenerationStatus(models.TextChoices):
+        IDLE = "idle", _("Idle")
+        GENERATING = "generating", _("Generating content")
+        WRITING = "writing", _("Writing to course")
+        DONE = "done", _("Done")
+        FAILED = "failed", _("Failed")
+
     user = models.ForeignKey(
         User,
         on_delete=models.CASCADE,
@@ -45,10 +52,21 @@ class ChatSession(TimeStampedModel):
         choices=Status.choices,
         default=Status.ACTIVE,
     )
-    # The most recent COURSE_JSON emitted by the assistant in Phase 5.
+    # The full generated course outline (assembled by the generator service).
     course_json = models.JSONField(null=True, blank=True)
     # Current display phase (1–4): 1=Learner, 2=Transformation, 3=Assessment, 4=Generate
     current_phase = models.PositiveSmallIntegerField(default=1)
+    # Course-generation lifecycle (separate from the chat ``status`` above).
+    generation_status = models.CharField(
+        max_length=20,
+        choices=GenerationStatus.choices,
+        default=GenerationStatus.IDLE,
+    )
+    # Last generation error message (surfaced to the UI for the retry path).
+    generation_error = models.TextField(blank=True, default="")
+    # Usage-key strings of the chapters created in the last write, for rollback
+    # and to detect a course that already has Sherab-built content.
+    created_section_locators = models.JSONField(null=True, blank=True, default=list)
 
     class Meta:
         app_label = "ai_course_creator"

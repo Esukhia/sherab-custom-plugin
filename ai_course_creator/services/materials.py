@@ -10,8 +10,15 @@ import logging
 
 log = logging.getLogger(__name__)
 
-# Cap extracted text so a single huge upload can't blow the model context.
+# Cap extracted text *stored* per material so a single huge upload can't blow up
+# the database row.
 MAX_TEXT_CHARS = 200_000
+
+# Cap the total materials text *sent to the model* in one request. The LLM has a
+# hard per-request token budget (Groq returns HTTP 413 above it), and the system
+# prompt + conversation already consume part of it. ~16k chars ≈ 4k tokens.
+# Overridable via the AI_COURSE_CREATOR_MAX_CONTEXT_CHARS setting.
+DEFAULT_MAX_CONTEXT_CHARS = 16_000
 
 
 def _truncate(text):
@@ -137,15 +144,51 @@ def _html_to_text(html):
     return text.strip()
 
 
+def _max_context_chars():
+    try:
+        from django.conf import settings
+
+        return int(getattr(settings, "AI_COURSE_CREATOR_MAX_CONTEXT_CHARS", DEFAULT_MAX_CONTEXT_CHARS))
+    except Exception:  # pylint: disable=broad-except
+        return DEFAULT_MAX_CONTEXT_CHARS
+
+
+def build_names_summary(materials):
+    """
+    Build a lightweight, names-only summary of shared materials for the *chat*.
+
+    During the conversation (persona, transformation, assessment) Sherab only
+    needs to know *what* the creator uploaded so it can acknowledge it — not the
+    full extracted text. The heavy text is sent only at generation time (see
+    :func:`build_context`), which keeps every chat request small.
+    """
+    names = [getattr(m, "name", "material") for m in materials]
+    if not names:
+        return ""
+    return "The creator has uploaded these materials: " + "; ".join(names) + "."
+
+
 def build_context(materials):
     """
     Build a single plain-text digest from a queryset/iterable of
     :class:`UploadedMaterial` for inclusion in the model prompt.
+
+    The combined text is capped at ``_max_context_chars()`` so the request stays
+    within the model's per-request token budget. Each material gets a fair share
+    of the budget, so one giant upload can't crowd out the others.
     """
+    materials = list(materials)
+    with_text = [m for m in materials if getattr(m, "extracted_text", "") or ""]
+    if not with_text:
+        return ""
+
+    budget = _max_context_chars()
+    per_material = max(500, budget // len(with_text))
     blocks = []
-    for material in materials:
+    for material in with_text:
         label = getattr(material, "name", "material")
         text = getattr(material, "extracted_text", "") or ""
-        if text:
-            blocks.append(f"--- {label} ---\n{text}")
+        if len(text) > per_material:
+            text = text[:per_material] + "\n[…trimmed for length…]"
+        blocks.append(f"--- {label} ---\n{text}")
     return "\n\n".join(blocks)

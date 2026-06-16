@@ -32,7 +32,11 @@ class ChatSessionSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = ChatSession
-        fields = ["id", "course_id", "status", "messages", "materials", "has_course_json", "current_phase"]
+        fields = [
+            "id", "course_id", "status", "messages", "materials",
+            "has_course_json", "current_phase",
+            "generation_status", "generation_error",
+        ]
 
     def get_has_course_json(self, obj):
         return bool(obj.course_json)

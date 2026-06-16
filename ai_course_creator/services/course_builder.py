@@ -28,8 +28,6 @@ COURSE_JSON schema (see skill/SKILL.md):
 """
 
 import logging
-import re
-from uuid import uuid4
 from xml.sax.saxutils import escape
 
 log = logging.getLogger(__name__)
@@ -52,11 +50,35 @@ def user_can_author(user, course_key):
 # --------------------------------------------------------------------------- #
 # Problem OLX builders
 # --------------------------------------------------------------------------- #
-def _multiple_choice_olx(question, choices, correct):
-    correct = (correct or "").strip()
+def _normalise_correct(correct):
+    """Return the set of correct answer strings, accepting a str or a list."""
+    if correct is None:
+        return set()
+    if isinstance(correct, (list, tuple)):
+        return {str(c).strip() for c in correct if str(c).strip()}
+    return {str(correct).strip()}
+
+
+def _solution_xml(explanation):
+    """Build the optional <solution> explanation block shared by all problems."""
+    if not explanation:
+        return ""
+    return (
+        '  <solution>\n'
+        '    <div class="detailed-solution">\n'
+        "      <p>Explanation</p>\n"
+        f"      <p>{escape(explanation)}</p>\n"
+        "    </div>\n"
+        "  </solution>\n"
+    )
+
+
+def _multiple_choice_olx(question, choices, correct, explanation=""):
+    """Single-select MCQ (also used for True/False)."""
+    correct_set = _normalise_correct(correct)
     choice_xml = []
     for choice in choices or []:
-        is_correct = "true" if choice.strip() == correct else "false"
+        is_correct = "true" if choice.strip() in correct_set else "false"
         choice_xml.append(f'      <choice correct="{is_correct}">{escape(choice)}</choice>')
     return (
         "<problem>\n"
@@ -66,63 +88,113 @@ def _multiple_choice_olx(question, choices, correct):
         + "\n".join(choice_xml)
         + "\n    </choicegroup>\n"
         "  </multiplechoiceresponse>\n"
+        + _solution_xml(explanation)
+        + "</problem>"
+    )
+
+
+def _multi_select_olx(question, choices, correct, explanation=""):
+    """Checkbox / multi-answer problem (choiceresponse)."""
+    correct_set = _normalise_correct(correct)
+    choice_xml = []
+    for choice in choices or []:
+        is_correct = "true" if choice.strip() in correct_set else "false"
+        choice_xml.append(f'      <choice correct="{is_correct}">{escape(choice)}</choice>')
+    return (
+        "<problem>\n"
+        "  <choiceresponse>\n"
+        f"    <label>{escape(question)}</label>\n"
+        "    <checkboxgroup>\n"
+        + "\n".join(choice_xml)
+        + "\n    </checkboxgroup>\n"
+        "  </choiceresponse>\n"
+        + _solution_xml(explanation)
+        + "</problem>"
+    )
+
+
+def _dropdown_olx(question, choices, correct, explanation=""):
+    """Dropdown / select problem (optionresponse)."""
+    correct_set = _normalise_correct(correct)
+    option_xml = []
+    for choice in choices or []:
+        is_correct = "true" if choice.strip() in correct_set else "false"
+        option_xml.append(f'      <option correct="{is_correct}">{escape(choice)}</option>')
+    return (
+        "<problem>\n"
+        "  <optionresponse>\n"
+        f"    <label>{escape(question)}</label>\n"
+        "    <optioninput>\n"
+        + "\n".join(option_xml)
+        + "\n    </optioninput>\n"
+        "  </optionresponse>\n"
+        + _solution_xml(explanation)
+        + "</problem>"
+    )
+
+
+def _short_answer_olx(question, correct, explanation=""):
+    """Free-text answer problem (stringresponse, case-insensitive)."""
+    correct_list = sorted(_normalise_correct(correct))
+    answer = escape(correct_list[0]) if correct_list else ""
+    extra_answers = "".join(
+        f'    <additional_answer answer="{escape(a)}"/>\n' for a in correct_list[1:]
+    )
+    return (
+        "<problem>\n"
+        '  <stringresponse answer="' + answer + '" type="ci">\n'
+        f"    <label>{escape(question)}</label>\n"
+        + extra_answers
+        + '    <textline size="40"/>\n'
+        + _solution_xml(explanation)
+        + "  </stringresponse>\n"
         "</problem>"
     )
 
 
-def _true_false_olx(question, correct):
-    choices = ["True", "False"]
-    # Normalise the correct answer to one of the two labels.
-    correct_label = "True"
-    if isinstance(correct, str) and correct.strip().lower() in ("false", "f", "no"):
-        correct_label = "False"
-    return _multiple_choice_olx(question, choices, correct_label)
-
-
-def _short_answer_olx(question, correct):
-    answer = escape(correct) if correct else ""
+def _numerical_olx(question, correct, explanation="", tolerance="5%"):
+    """Numerical answer problem (numericalresponse)."""
+    correct_list = sorted(_normalise_correct(correct))
+    answer = escape(correct_list[0]) if correct_list else "0"
     return (
         "<problem>\n"
-        "  <stringresponse answer=\"" + answer + "\" type=\"ci\">\n"
+        f'  <numericalresponse answer="{answer}">\n'
         f"    <label>{escape(question)}</label>\n"
-        '    <textline size="40"/>\n'
-        "  </stringresponse>\n"
+        f'    <responseparam type="tolerance" default="{tolerance}"/>\n'
+        "    <formulaequationinput/>\n"
+        + _solution_xml(explanation)
+        + "  </numericalresponse>\n"
         "</problem>"
     )
 
 
 def build_problem_olx(component):
-    """Build CAPA OLX for a problem component dict."""
+    """Build CAPA OLX for a problem component dict (one of the 7 supported types)."""
     problem_type = (component.get("problemType") or "multiplechoice").lower()
     question = component.get("question") or component.get("title") or "Question"
     choices = component.get("choices") or []
     correct = component.get("correct")
+    explanation = component.get("explanation") or ""
 
     if problem_type in ("truefalse", "true_false", "true/false"):
-        return _true_false_olx(question, correct)
-    if problem_type in ("shortanswer", "short_answer", "stringresponse"):
-        return _short_answer_olx(question, correct)
-    if problem_type in ("multiplechoice", "multiple_choice", "mcq"):
-        return _multiple_choice_olx(question, choices, correct)
-    # "scenario" or anything unknown: multiple choice if we have options, else short answer.
+        # Normalise the correct answer to one of the two labels.
+        correct_set = {c.lower() for c in _normalise_correct(correct)}
+        correct_label = "False" if correct_set & {"false", "f", "no"} else "True"
+        return _multiple_choice_olx(question, ["True", "False"], correct_label, explanation)
+    if problem_type in ("multiselect", "multi_select", "checkbox", "choiceresponse"):
+        return _multi_select_olx(question, choices, correct, explanation)
+    if problem_type in ("dropdown", "optionresponse", "select"):
+        return _dropdown_olx(question, choices, correct, explanation)
+    if problem_type in ("numerical", "numericalresponse", "number"):
+        return _numerical_olx(question, correct, explanation)
+    if problem_type in ("shortanswer", "short_answer", "stringresponse", "text", "textinput"):
+        return _short_answer_olx(question, correct, explanation)
+    if problem_type in ("multiplechoice", "multiple_choice", "mcq", "singleselect", "single_select"):
+        return _multiple_choice_olx(question, choices, correct, explanation)
+    # Anything unknown: multiple choice if we have options, else short answer.
     if choices:
-        return _multiple_choice_olx(question, choices, correct)
-    return _short_answer_olx(question, correct)
-
-
-# --------------------------------------------------------------------------- #
-# YouTube id extraction for video components
-# --------------------------------------------------------------------------- #
-_YOUTUBE_RE = re.compile(
-    r"(?:youtube\.com/(?:watch\?v=|embed/)|youtu\.be/)([A-Za-z0-9_-]{11})"
-)
-
-
-def _youtube_id(url):
-    if not url:
-        return None
-    match = _YOUTUBE_RE.search(url)
-    return match.group(1) if match else None
+        return _multiple_choice_olx(question, choices, correct, explanation)
+    return _short_answer_olx(question, correct, explanation)
 
 
 # --------------------------------------------------------------------------- #
@@ -141,12 +213,22 @@ def _create_component(store, user, parent_locator, component):
     title = title or comp_type.capitalize()
 
     if comp_type == "video":
-        block = create_xblock(parent_locator, user, "video", title)
-        youtube_id = _youtube_id(component.get("source"))
-        if youtube_id:
-            block.youtube_id_1_0 = youtube_id
-        elif component.get("source"):
-            block.html5_sources = [component["source"]]
+        # We never auto-fill a video URL. Instead we drop an empty video block
+        # whose name tells the creator exactly what to find or record, plus a
+        # short HTML note for the same guidance, so the slot is obvious in the
+        # outline. The creator supplies the real video later.
+        description = (component.get("description") or component.get("body") or "").strip()
+        guidance = description or "Add a video for this unit."
+        note = create_xblock(parent_locator, user, "html", "🎥 Video guidance")
+        note.data = (
+            '<div style="border-left:3px solid #0075b4;padding:0.25rem 0.75rem;">'
+            f"<p><strong>🎥 Video needed:</strong> {escape(guidance)}</p>"
+            "<p><em>Replace this note and the empty video below with your own video.</em></p>"
+            "</div>"
+        )
+        store.update_item(note, user.id)
+        video_name = ("🎥 " + guidance)[:120]
+        block = create_xblock(parent_locator, user, "video", video_name)
         store.update_item(block, user.id)
         return "video"
 
@@ -155,14 +237,6 @@ def _create_component(store, user, parent_locator, component):
         block.data = build_problem_olx(component)
         store.update_item(block, user.id)
         return "problem"
-
-    if comp_type == "discussion":
-        block = create_xblock(parent_locator, user, "discussion", title)
-        block.discussion_id = uuid4().hex
-        block.discussion_category = component.get("category", "General")
-        block.discussion_target = title
-        store.update_item(block, user.id)
-        return "discussion"
 
     # Default: HTML/text component.
     block = create_xblock(parent_locator, user, "html", title)
@@ -208,42 +282,80 @@ def apply_course_json(course_key, user, course_json):
     counts = {"sections": 0, "subsections": 0, "units": 0, "components": 0}
     section_locators = []
 
-    with store.bulk_operations(course_key):
-        course = store.get_course(course_key)
-        if course is None:
-            raise CourseBuildError(f"Course not found: {course_key}")
-        course_locator = str(course.location)
+    try:
+        with store.bulk_operations(course_key):
+            course = store.get_course(course_key)
+            if course is None:
+                raise CourseBuildError(f"Course not found: {course_key}")
+            course_locator = str(course.location)
 
-        for section in course_json["sections"]:
-            chapter = create_xblock(
-                course_locator, user, "chapter", section.get("title") or "Section"
-            )
-            counts["sections"] += 1
-            section_locators.append(str(chapter.location))
-            chapter_locator = str(chapter.location)
-
-            for subsection in section.get("subsections", []):
-                sequential = create_xblock(
-                    chapter_locator, user, "sequential", subsection.get("title") or "Subsection"
+            for section in course_json["sections"]:
+                chapter = create_xblock(
+                    course_locator, user, "chapter", section.get("title") or "Section"
                 )
-                counts["subsections"] += 1
-                sequential_locator = str(sequential.location)
+                counts["sections"] += 1
+                section_locators.append(str(chapter.location))
+                chapter_locator = str(chapter.location)
 
-                for unit in subsection.get("units", []):
-                    vertical = create_xblock(
-                        sequential_locator, user, "vertical", unit.get("title") or "Unit"
+                for subsection in section.get("subsections", []):
+                    sequential = create_xblock(
+                        chapter_locator, user, "sequential", subsection.get("title") or "Subsection"
                     )
-                    counts["units"] += 1
-                    vertical_locator = str(vertical.location)
+                    counts["subsections"] += 1
+                    sequential_locator = str(sequential.location)
 
-                    for component in unit.get("components", []):
-                        try:
-                            _create_component(store, user, vertical_locator, component)
-                            counts["components"] += 1
-                        except Exception:  # pylint: disable=broad-except
-                            log.exception(
-                                "ai_course_creator: failed to create component %s", component
-                            )
+                    for unit in subsection.get("units", []):
+                        vertical = create_xblock(
+                            sequential_locator, user, "vertical", unit.get("title") or "Unit"
+                        )
+                        counts["units"] += 1
+                        vertical_locator = str(vertical.location)
+
+                        for component in unit.get("components", []):
+                            # A single bad component shouldn't abort the build.
+                            try:
+                                _create_component(store, user, vertical_locator, component)
+                                counts["components"] += 1
+                            except Exception:  # pylint: disable=broad-except
+                                log.exception(
+                                    "ai_course_creator: failed to create component %s", component
+                                )
+    except CourseBuildError:
+        raise
+    except Exception as exc:  # pylint: disable=broad-except
+        # Structural failure (section/subsection/unit). Roll back what we made so
+        # the course is never left half-built, then surface a clean error.
+        log.exception("ai_course_creator: build failed, rolling back %s", section_locators)
+        delete_sections(course_key, user, section_locators)
+        raise CourseBuildError(
+            "Could not build the full course. Any partial content was removed — please retry."
+        ) from exc
 
     log.info("ai_course_creator: built course %s -> %s", course_key, counts)
     return {"counts": counts, "sectionLocators": section_locators}
+
+
+def delete_sections(course_key, user, section_locators):
+    """
+    Best-effort deletion of previously created top-level sections (chapters).
+
+    Used both for rollback after a failed build and to clear a prior Sherab run
+    before regenerating. Deleting a chapter removes its whole subtree.
+    """
+    from opaque_keys import InvalidKeyError
+    from opaque_keys.edx.keys import CourseKey, UsageKey
+    from xmodule.modulestore.django import modulestore
+
+    if isinstance(course_key, str):
+        try:
+            course_key = CourseKey.from_string(course_key)
+        except InvalidKeyError:
+            return
+
+    store = modulestore()
+    with store.bulk_operations(course_key):
+        for locator in section_locators or []:
+            try:
+                store.delete_item(UsageKey.from_string(locator), user.id)
+            except Exception:  # pylint: disable=broad-except
+                log.warning("ai_course_creator: could not delete %s during rollback", locator)
