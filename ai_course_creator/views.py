@@ -56,18 +56,58 @@ class ChatView(APIView):
     authentication_classes = AUTHENTICATION_CLASSES
     permission_classes = (IsAuthenticated,)
 
+    @staticmethod
+    def _recompute_phase(session):
+        """
+        Reset ``current_phase`` to the highest phase marker still present in the
+        surviving assistant messages (default 1). Used after an edit truncates
+        the conversation so the phase indicator can't stay ahead of the content.
+        """
+        highest = 1
+        for message in session.messages.filter(role=ChatMessage.Role.ASSISTANT):
+            phase = extract_phase_marker(message.content)
+            if phase and phase > highest:
+                highest = phase
+        if session.current_phase != highest:
+            session.current_phase = highest
+            session.save(update_fields=["current_phase", "modified"])
+
     def post(self, request):
         course_id = request.data.get("course_id")
         message_text = (request.data.get("message") or "").strip()
+        edit_message_id = request.data.get("edit_message_id")
         if not course_id:
             return Response({"error": "course_id is required."}, status=status.HTTP_400_BAD_REQUEST)
 
         session = _get_or_create_session(request.user, course_id)
 
+        # Edit & resend: the creator changed an earlier message. Drop that message
+        # and everything after it (the stale assistant reply and any later turns),
+        # then re-ask from that point with the new text. Phase is recomputed from
+        # the surviving assistant messages so the indicator rolls back correctly.
+        if edit_message_id is not None:
+            if not message_text:
+                return Response(
+                    {"error": "An edited message cannot be empty."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            try:
+                target = session.messages.get(pk=edit_message_id, role=ChatMessage.Role.USER)
+            except ChatMessage.DoesNotExist:
+                return Response(
+                    {"error": "That message no longer exists."},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+            # ids are monotonic with creation order, so >= the target drops it and
+            # everything after it in one shot.
+            session.messages.filter(pk__gte=target.pk).delete()
+            self._recompute_phase(session)
+
         # Persist the user's turn (an empty message is allowed for the very first
         # "open the chat" call, which just triggers Sherab's greeting).
+        user_message = None
         if message_text:
-            ChatMessage.objects.create(
+            user_message = ChatMessage.objects.create(
                 session=session, role=ChatMessage.Role.USER, content=message_text
             )
 
@@ -86,6 +126,12 @@ class ChatView(APIView):
         materials_context = materials.build_names_summary(session.materials.all())
 
         def event_stream():
+            # Emit the persisted user-message id up front so the client can tag
+            # (and later edit) the message even if the stream then errors out and
+            # never reaches the closing "done" frame.
+            if user_message is not None:
+                yield _sse({"type": "meta", "userMessageId": user_message.id})
+
             collected = []
             try:
                 for chunk in stream_reply(history, materials_context):
@@ -102,9 +148,10 @@ class ChatView(APIView):
             full_text = "".join(collected)
             course_json = extract_course_json(full_text)
             new_phase = extract_phase_marker(full_text)
+            assistant_message = None
             try:
                 # Persist the assistant turn (full text, incl. any COURSE_JSON block).
-                ChatMessage.objects.create(
+                assistant_message = ChatMessage.objects.create(
                     session=session, role=ChatMessage.Role.ASSISTANT, content=full_text
                 )
                 update_fields = ["modified"]
@@ -121,7 +168,13 @@ class ChatView(APIView):
                 # Don't let a persistence hiccup kill the stream the user already saw.
                 log.exception("ai_course_creator: failed to persist assistant message")
 
-            yield _sse({"type": "done", "hasCourseJson": bool(course_json), "currentPhase": session.current_phase})
+            yield _sse({
+                "type": "done",
+                "hasCourseJson": bool(course_json),
+                "currentPhase": session.current_phase,
+                "userMessageId": user_message.id if user_message else None,
+                "assistantMessageId": assistant_message.id if assistant_message else None,
+            })
 
         response = StreamingHttpResponse(event_stream(), content_type="text/event-stream")
         response["Cache-Control"] = "no-cache"
