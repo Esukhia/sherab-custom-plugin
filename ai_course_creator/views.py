@@ -196,7 +196,6 @@ class UploadMaterialView(APIView):
         session = _get_or_create_session(request.user, course_id)
         uploaded = request.FILES.get("file")
         url = (request.data.get("url") or "").strip()
-        text = (request.data.get("text") or "").strip()
 
         try:
             if uploaded:
@@ -220,16 +219,9 @@ class UploadMaterialView(APIView):
                     name=url,
                     extracted_text=extracted,
                 )
-            elif text:
-                material = UploadedMaterial.objects.create(
-                    session=session,
-                    source_type=UploadedMaterial.SourceType.TEXT,
-                    name=(text[:60] + "…") if len(text) > 60 else text,
-                    extracted_text=text,
-                )
             else:
                 return Response(
-                    {"error": "Provide a file, url, or text."},
+                    {"error": "Provide a file or url."},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
         except ValueError as exc:

@@ -207,9 +207,26 @@ def _create_component(store, user, parent_locator, component):
     comp_type = (component.get("type") or "html").lower()
     title = component.get("title")
     if not title and comp_type == "problem":
-        # Fall back to a trimmed version of the question for a readable name.
-        question = component.get("question") or ""
-        title = (question[:60] + "…") if len(question) > 60 else question
+        # Use the problem type as the display_name rather than the question text.
+        # Open edX renders display_name in both the Studio block header AND as an
+        # internal bold heading inside the block frame, so using the question text
+        # would cause it to appear twice before the OLX <label> adds a third copy.
+        problem_type = (component.get("problemType") or "multiplechoice").lower()
+        _type_labels = {
+            "multiplechoice": "Multiple Choice",
+            "multiple_choice": "Multiple Choice",
+            "mcq": "Multiple Choice",
+            "truefalse": "True / False",
+            "true_false": "True / False",
+            "multiselect": "Multi-Select",
+            "multi_select": "Multi-Select",
+            "checkbox": "Multi-Select",
+            "dropdown": "Dropdown",
+            "shortanswer": "Short Answer",
+            "short_answer": "Short Answer",
+            "numerical": "Numerical",
+        }
+        title = _type_labels.get(problem_type, "Question")
     title = title or comp_type.capitalize()
 
     if comp_type == "video":
@@ -235,6 +252,7 @@ def _create_component(store, user, parent_locator, component):
     if comp_type == "problem":
         block = create_xblock(parent_locator, user, "problem", title)
         block.data = build_problem_olx(component)
+        block.max_attempts = 1
         store.update_item(block, user.id)
         return "problem"
 
