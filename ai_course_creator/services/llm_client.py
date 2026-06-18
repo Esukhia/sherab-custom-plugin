@@ -20,11 +20,17 @@ from django.conf import settings
 
 log = logging.getLogger(__name__)
 
-SKILL_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "skill")
+PLUGIN_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SKILL_DIR = os.path.join(PLUGIN_DIR, "skill")
 
 # Legacy markers — kept so existing callers don't break.
 COURSE_JSON_START = "===COURSE_JSON_START==="
 COURSE_JSON_END = "===COURSE_JSON_END==="
+
+# Section-editor markers: the per-section editor emits the full desired section
+# tree between these so the backend can apply it. Mirrors the COURSE_JSON idiom.
+SECTION_EDITS_START = "===SECTION_EDITS_START==="
+SECTION_EDITS_END = "===SECTION_EDITS_END==="
 
 # Phase marker regex (lazy-initialised).
 PHASE_MARKER_RE = None
@@ -57,12 +63,19 @@ class LLMError(Exception):
     """Raised for an LLM API failure, with a user-friendly message."""
 
 
-@lru_cache(maxsize=1)
-def _load_system_instruction():
-    """Build the system instruction from the bundled skill files. Cached for the process lifetime."""
+@lru_cache(maxsize=8)
+def _load_system_instruction(skill_name="skill"):
+    """
+    Build the system instruction from a bundled skill directory.
+
+    ``skill_name`` selects which skill dir under the plugin to load (e.g. "skill"
+    for the 5-phase course creator, "skill_section_editor" for the per-section
+    editor). Cached per skill_name for the process lifetime.
+    """
     import re as _re  # pylint: disable=import-outside-toplevel
     parts = []
-    skill_md = os.path.join(SKILL_DIR, "SKILL.md")
+    skill_dir = os.path.join(PLUGIN_DIR, skill_name)
+    skill_md = os.path.join(skill_dir, "SKILL.md")
     try:
         with open(skill_md, encoding="utf-8") as handle:
             raw = handle.read()
@@ -75,7 +88,7 @@ def _load_system_instruction():
             "Guide the creator through designing a course, one question at a time."
         )
 
-    references_dir = os.path.join(SKILL_DIR, "references")
+    references_dir = os.path.join(skill_dir, "references")
     if os.path.isdir(references_dir):
         for filename in sorted(os.listdir(references_dir)):
             if not filename.endswith(".md"):
@@ -101,7 +114,7 @@ def _get_api_key():
 def _get_model_name():
     return (
         getattr(settings, "GEMINI_MODEL", "")
-        or os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+        or os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
     )
 
 
@@ -152,6 +165,17 @@ def _is_rate_limit(exc):
     )
 
 
+def _is_server_unavailable(exc):
+    """True for transient 503 / high-demand errors that are worth retrying."""
+    text = str(exc).lower()
+    return (
+        "503" in text
+        or "service unavailable" in text
+        or "high demand" in text
+        or "unavailable" in text
+    )
+
+
 def _is_too_large(exc):
     text = str(exc).lower()
     return "413" in text or "too large" in text or "request_too_large" in text or "payload_too_large" in text
@@ -191,15 +215,22 @@ def _retry_after_seconds(exc, default):
 
 
 CHAT_MAX_TOKENS = 1024
+# Section editor embeds a SECTION_EDITS JSON block; 8192 is generous without
+# reserving a huge compute slot that triggers 503 high-demand errors.
+SECTION_CHAT_MAX_TOKENS = 8192
 RATE_LIMIT_MAX_WAIT = 65
 JSON_MAX_RETRIES = 6
-CHAT_MAX_RETRIES = 3
+CHAT_MAX_RETRIES = 5
 CHAT_RATE_LIMIT_MAX_WAIT = 30
 
 
-def stream_reply(history, materials_context=""):
+def stream_reply(history, materials_context="", skill_name="skill", max_tokens=CHAT_MAX_TOKENS):
     """
     Stream the assistant's reply token-by-token using the Gemini streaming API.
+
+    ``skill_name`` selects the system instruction (skill dir) to use.
+    ``max_tokens`` caps the output (larger for the section editor, which embeds
+    a desired section tree in its reply).
 
     Yields:
         str chunks of assistant text.
@@ -210,9 +241,9 @@ def stream_reply(history, materials_context=""):
     contents = _to_contents(history, materials_context)
 
     config = types.GenerateContentConfig(
-        system_instruction=_load_system_instruction(),
+        system_instruction=_load_system_instruction(skill_name),
         temperature=0.7,
-        max_output_tokens=CHAT_MAX_TOKENS,
+        max_output_tokens=max_tokens,
     )
 
     last_exc = None
@@ -237,14 +268,23 @@ def stream_reply(history, materials_context=""):
                     "There's too much material for one request. Remove or shorten some "
                     "uploaded materials and try again."
                 ) from exc
-            if _is_rate_limit(exc) and attempt < CHAT_MAX_RETRIES - 1:
-                wait = min(_retry_after_seconds(exc, default=8 * (attempt + 1)) + 1, CHAT_RATE_LIMIT_MAX_WAIT)
-                log.warning(
-                    "ai_course_creator: Gemini rate limited (chat), waiting %.1fs (attempt %d/%d)",
-                    wait, attempt + 1, CHAT_MAX_RETRIES,
-                )
-                time.sleep(wait)
-                continue
+            if attempt < CHAT_MAX_RETRIES - 1:
+                if _is_rate_limit(exc):
+                    wait = min(_retry_after_seconds(exc, default=8 * (attempt + 1)) + 1, CHAT_RATE_LIMIT_MAX_WAIT)
+                    log.warning(
+                        "ai_course_creator: Gemini rate limited (chat), waiting %.1fs (attempt %d/%d)",
+                        wait, attempt + 1, CHAT_MAX_RETRIES,
+                    )
+                    time.sleep(wait)
+                    continue
+                if _is_server_unavailable(exc):
+                    wait = min(4 * (attempt + 1), 20)
+                    log.warning(
+                        "ai_course_creator: Gemini unavailable (503), retrying in %.1fs (attempt %d/%d)",
+                        wait, attempt + 1, CHAT_MAX_RETRIES,
+                    )
+                    time.sleep(wait)
+                    continue
             raise LLMError(_friendly_llm_error(exc)) from exc
     raise LLMError(_friendly_llm_error(last_exc))
 
@@ -348,4 +388,32 @@ def strip_course_json(text):
     after = ""
     if COURSE_JSON_END in text:
         after = text.split(COURSE_JSON_END, 1)[1]
+    return (before + after).strip()
+
+
+def extract_section_edits(text):
+    """Pull the embedded SECTION_EDITS desired-tree block out of an assistant message."""
+    import json  # pylint: disable=import-outside-toplevel
+
+    if SECTION_EDITS_START not in text or SECTION_EDITS_END not in text:
+        return None
+    try:
+        raw = text.split(SECTION_EDITS_START, 1)[1].split(SECTION_EDITS_END, 1)[0].strip()
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[1] if "\n" in raw else raw
+            raw = raw.rsplit("```", 1)[0]
+        return json.loads(raw.strip())
+    except (IndexError, ValueError):
+        log.warning("ai_course_creator: failed to parse SECTION_EDITS block")
+        return None
+
+
+def strip_section_edits(text):
+    """Remove the SECTION_EDITS block so it is never shown to the user."""
+    if SECTION_EDITS_START not in text:
+        return text
+    before = text.split(SECTION_EDITS_START, 1)[0]
+    after = ""
+    if SECTION_EDITS_END in text:
+        after = text.split(SECTION_EDITS_END, 1)[1]
     return (before + after).strip()

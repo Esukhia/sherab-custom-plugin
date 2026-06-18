@@ -2,10 +2,13 @@
 API endpoints for the Sherab AI course-creator chatbot (Studio / CMS side).
 
 Endpoints (mounted under the app namespace, see urls.py):
-    POST  api/ai-course-creator/chat/      -> stream an assistant reply (SSE)
-    POST  api/ai-course-creator/upload/    -> add a material (file / link / text)
-    POST  api/ai-course-creator/generate/  -> generate + write the course (SSE)
-    GET   api/ai-course-creator/session/   -> fetch the session (resume)
+    POST  api/ai-course-creator/chat/             -> stream an assistant reply (SSE)
+    POST  api/ai-course-creator/upload/           -> add a material (file / link / text)
+    POST  api/ai-course-creator/generate/         -> generate + write the course (SSE)
+    GET   api/ai-course-creator/session/          -> fetch the session (resume)
+    GET   api/ai-course-creator/section-content/  -> read one section's content tree
+    POST  api/ai-course-creator/section-chat/     -> stream a per-section editor reply (SSE)
+    POST  api/ai-course-creator/apply-section/    -> apply the latest proposed section edits
 
 Auth: JWT (sent by the authoring MFE) or session. All endpoints require an
 authenticated user, and course-mutating actions additionally check course
@@ -25,12 +28,14 @@ from rest_framework.views import APIView
 
 from .models import ChatMessage, ChatSession, UploadedMaterial
 from .serializers import ChatSessionSerializer
-from .services import course_builder, generator, materials
+from .services import course_builder, generator, materials, section_editor
 from .services.llm_client import (
+    SECTION_CHAT_MAX_TOKENS,
     LLMError,
     LLMNotConfigured,
     extract_course_json,
     extract_phase_marker,
+    extract_section_edits,
     stream_reply,
     strip_course_json,
 )
@@ -45,8 +50,17 @@ def _sse(payload):
     return f"data: {json.dumps(payload)}\n\n"
 
 
-def _get_or_create_session(user, course_id):
-    session, _created = ChatSession.objects.get_or_create(user=user, course_id=course_id)
+def _get_or_create_session(user, course_id, section_locator=""):
+    """
+    Fetch or create the conversation for a (user, course, section).
+
+    ``section_locator`` is empty for the whole-course creator flow and the
+    chapter usage key for the per-section editor, so each section keeps its own
+    thread.
+    """
+    session, _created = ChatSession.objects.get_or_create(
+        user=user, course_id=course_id, section_locator=section_locator
+    )
     return session
 
 
@@ -180,6 +194,201 @@ class ChatView(APIView):
         response["Cache-Control"] = "no-cache"
         response["X-Accel-Buffering"] = "no"  # disable nginx buffering for SSE
         return response
+
+
+class SectionContentView(APIView):
+    """Return one section's (chapter's) current content tree for the editor sidebar."""
+
+    authentication_classes = AUTHENTICATION_CLASSES
+    permission_classes = (IsAuthenticated,)
+
+    def get(self, request):
+        course_id = request.query_params.get("course_id")
+        section_locator = request.query_params.get("section_locator")
+        if not course_id or not section_locator:
+            return Response(
+                {"error": "course_id and section_locator are required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            tree = section_editor.read_section(course_id, request.user, section_locator)
+        except section_editor.SectionEditError as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_404_NOT_FOUND)
+        return Response(tree)
+
+
+class SectionChatView(APIView):
+    """Stream the per-section editor's next reply for a (user, course, section)."""
+
+    authentication_classes = AUTHENTICATION_CLASSES
+    permission_classes = (IsAuthenticated,)
+
+    def post(self, request):
+        course_id = request.data.get("course_id")
+        section_locator = request.data.get("section_locator")
+        message_text = (request.data.get("message") or "").strip()
+        edit_message_id = request.data.get("edit_message_id")
+        if not course_id or not section_locator:
+            return Response(
+                {"error": "course_id and section_locator are required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Read the current section content up front: it both seeds the model's
+        # awareness of what's there and validates the locator/permission before
+        # we open a streaming response (errors are easier to surface as JSON).
+        try:
+            section_tree = section_editor.read_section(course_id, request.user, section_locator)
+        except section_editor.SectionEditError as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_404_NOT_FOUND)
+
+        session = _get_or_create_session(request.user, course_id, section_locator=section_locator)
+
+        # Edit & resend: drop the edited message and everything after it.
+        if edit_message_id is not None:
+            if not message_text:
+                return Response(
+                    {"error": "An edited message cannot be empty."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            try:
+                target = session.messages.get(pk=edit_message_id, role=ChatMessage.Role.USER)
+            except ChatMessage.DoesNotExist:
+                return Response(
+                    {"error": "That message no longer exists."},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+            session.messages.filter(pk__gte=target.pk).delete()
+
+        user_message = None
+        if message_text:
+            user_message = ChatMessage.objects.create(
+                session=session, role=ChatMessage.Role.USER, content=message_text
+            )
+
+        history = [
+            {"role": m.role, "content": m.content}
+            for m in session.messages.all()
+        ]
+        if not history:
+            history = [{"role": "user", "content": "Let's improve this section."}]
+
+        # The current section content is injected as context on the last user
+        # turn (like the materials digest), re-read each turn so the model always
+        # references live usage keys.
+        section_context = (
+            "[Current section content (JSON tree with usageKeys). Reference only these "
+            f"usageKeys when proposing edits:\n{json.dumps(section_tree)}\n]"
+        )
+
+        def event_stream():
+            if user_message is not None:
+                yield _sse({"type": "meta", "userMessageId": user_message.id})
+
+            collected = []
+            try:
+                for chunk in stream_reply(
+                    history,
+                    materials_context=section_context,
+                    skill_name="skill_section_editor",
+                    max_tokens=SECTION_CHAT_MAX_TOKENS,
+                ):
+                    collected.append(chunk)
+                    yield _sse({"type": "token", "text": chunk})
+            except (LLMNotConfigured, LLMError) as exc:
+                yield _sse({"type": "error", "error": str(exc)})
+                return
+            except Exception:  # pylint: disable=broad-except
+                log.exception("ai_course_creator: section chat stream failed")
+                yield _sse({"type": "error", "error": "The assistant ran into a problem."})
+                return
+
+            full_text = "".join(collected)
+            can_apply = bool(extract_section_edits(full_text))
+            assistant_message = None
+            try:
+                assistant_message = ChatMessage.objects.create(
+                    session=session, role=ChatMessage.Role.ASSISTANT, content=full_text
+                )
+            except Exception:  # pylint: disable=broad-except
+                log.exception("ai_course_creator: failed to persist section assistant message")
+
+            yield _sse({
+                "type": "done",
+                "canApply": can_apply,
+                "userMessageId": user_message.id if user_message else None,
+                "assistantMessageId": assistant_message.id if assistant_message else None,
+            })
+
+        response = StreamingHttpResponse(event_stream(), content_type="text/event-stream")
+        response["Cache-Control"] = "no-cache"
+        response["X-Accel-Buffering"] = "no"  # disable nginx buffering for SSE
+        return response
+
+
+class ApplySectionView(APIView):
+    """Apply the most recently proposed section edits for a (user, course, section)."""
+
+    authentication_classes = AUTHENTICATION_CLASSES
+    permission_classes = (IsAuthenticated,)
+
+    def post(self, request):
+        course_id = request.data.get("course_id")
+        section_locator = request.data.get("section_locator")
+        if not course_id or not section_locator:
+            return Response(
+                {"error": "course_id and section_locator are required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            session = ChatSession.objects.get(
+                user=request.user, course_id=course_id, section_locator=section_locator
+            )
+        except ChatSession.DoesNotExist:
+            return Response(
+                {"error": "No conversation to apply yet."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # Use the most recent assistant message that carries a SECTION_EDITS block.
+        edits = None
+        for message in session.messages.filter(
+            role=ChatMessage.Role.ASSISTANT
+        ).order_by("-created", "-id"):
+            edits = extract_section_edits(message.content)
+            if edits is not None:
+                break
+        if edits is None:
+            return Response(
+                {"error": "There are no proposed changes to apply."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            summary = section_editor.apply_section_edits(
+                course_id, request.user, section_locator, edits
+            )
+        except section_editor.SectionEditError as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception:  # pylint: disable=broad-except
+            log.exception("ai_course_creator: apply section edits failed")
+            return Response(
+                {"error": "Could not apply the changes. Please try again."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        return Response({
+            "sectionName": summary.get("sectionName", ""),
+            "counts": {
+                "updated": summary.get("updated", 0),
+                "created": summary.get("created", 0),
+                "deleted": summary.get("deleted", 0),
+                "reordered": summary.get("reordered", 0),
+            },
+            "rejected": summary.get("rejected", []),
+            "errors": summary.get("errors", []),
+        })
 
 
 class UploadMaterialView(APIView):
@@ -374,15 +583,30 @@ class SessionView(APIView):
         course_id = request.query_params.get("course_id")
         if not course_id:
             return Response({"error": "course_id is required."}, status=status.HTTP_400_BAD_REQUEST)
-        session = _get_or_create_session(request.user, course_id)
+        # section_locator="" is the whole-course creator conversation; a chapter
+        # usage key resumes that section's editor conversation.
+        section_locator = request.query_params.get("section_locator") or ""
+        session = _get_or_create_session(request.user, course_id, section_locator=section_locator)
         return Response(ChatSessionSerializer(session).data)
 
     def delete(self, request):
-        """Reset the conversation: delete the session (and its messages + materials)."""
+        """
+        Reset a conversation: delete the session (and its messages + materials).
+
+        Scoped to a single ``section_locator`` so resetting one section's editor
+        thread (or the creator thread, section_locator="") never wipes the others.
+        """
         course_id = request.query_params.get("course_id") or request.data.get("course_id")
         if not course_id:
             return Response({"error": "course_id is required."}, status=status.HTTP_400_BAD_REQUEST)
-        ChatSession.objects.filter(user=request.user, course_id=course_id).delete()
+        section_locator = (
+            request.query_params.get("section_locator")
+            or request.data.get("section_locator")
+            or ""
+        )
+        ChatSession.objects.filter(
+            user=request.user, course_id=course_id, section_locator=section_locator
+        ).delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
