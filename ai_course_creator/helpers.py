@@ -8,10 +8,14 @@ course-key + author-permission guard used by the course-mutating endpoints.
 
 import json
 
+from django.conf import settings
+from opaque_keys import InvalidKeyError
+from opaque_keys.edx.keys import CourseKey
 from rest_framework import status
 from rest_framework.response import Response
 
 from .models import ChatSession
+from .services import course_builder
 
 
 def sse(payload):
@@ -34,11 +38,6 @@ def require_course_author(user, course_id):
     author access. Callers do ``key, error = require_course_author(...); if
     error: return error``.
     """
-    from opaque_keys import InvalidKeyError  # pylint: disable=import-outside-toplevel
-    from opaque_keys.edx.keys import CourseKey  # pylint: disable=import-outside-toplevel
-
-    from .services import course_builder  # pylint: disable=import-outside-toplevel
-
     try:
         course_key = CourseKey.from_string(course_id)
     except InvalidKeyError:
@@ -54,13 +53,9 @@ def require_course_author(user, course_id):
 
 def feature_enabled():
     """True when the AI course creator is enabled in settings."""
-    from django.conf import settings  # pylint: disable=import-outside-toplevel
-
     return bool(getattr(settings, "AI_COURSE_CREATOR_ENABLED", True))
 
 
 def max_upload_bytes():
     """The maximum accepted size (bytes) for an uploaded material."""
-    from django.conf import settings  # pylint: disable=import-outside-toplevel
-
     return getattr(settings, "AI_COURSE_CREATOR_MAX_UPLOAD_BYTES", 25 * 1024 * 1024)
