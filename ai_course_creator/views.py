@@ -12,7 +12,6 @@ authenticated user, and course-mutating actions additionally check course
 author access.
 """
 
-import json
 import logging
 
 from django.http import StreamingHttpResponse
@@ -23,6 +22,13 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from .helpers import (
+    feature_enabled,
+    get_or_create_session,
+    max_upload_bytes,
+    require_course_author,
+    sse,
+)
 from .models import ChatMessage, ChatSession, UploadedMaterial
 from .serializers import ChatSessionSerializer
 from .services import course_builder, generator, materials
@@ -38,16 +44,6 @@ from .services.llm_client import (
 log = logging.getLogger(__name__)
 
 AUTHENTICATION_CLASSES = (JwtAuthentication, SessionAuthentication)
-
-
-def _sse(payload):
-    """Format a dict as a Server-Sent Events ``data:`` frame."""
-    return f"data: {json.dumps(payload)}\n\n"
-
-
-def _get_or_create_session(user, course_id):
-    session, _created = ChatSession.objects.get_or_create(user=user, course_id=course_id)
-    return session
 
 
 class ChatView(APIView):
@@ -73,26 +69,17 @@ class ChatView(APIView):
             session.save(update_fields=["current_phase", "modified"])
 
     def post(self, request):
-        from opaque_keys import InvalidKeyError
-        from opaque_keys.edx.keys import CourseKey
-
         course_id = request.data.get("course_id")
         message_text = (request.data.get("message") or "").strip()
         edit_message_id = request.data.get("edit_message_id")
         if not course_id:
             return Response({"error": "course_id is required."}, status=status.HTTP_400_BAD_REQUEST)
 
-        try:
-            course_key = CourseKey.from_string(course_id)
-        except InvalidKeyError:
-            return Response({"error": "Invalid course id."}, status=status.HTTP_400_BAD_REQUEST)
-        if not course_builder.user_can_author(request.user, course_key):
-            return Response(
-                {"error": "You do not have permission to edit this course."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
+        _course_key, error = require_course_author(request.user, course_id)
+        if error:
+            return error
 
-        session = _get_or_create_session(request.user, course_id)
+        session = get_or_create_session(request.user, course_id)
 
         # Edit & resend: the creator changed an earlier message. Drop that message
         # and everything after it (the stale assistant reply and any later turns),
@@ -143,19 +130,19 @@ class ChatView(APIView):
             # (and later edit) the message even if the stream then errors out and
             # never reaches the closing "done" frame.
             if user_message is not None:
-                yield _sse({"type": "meta", "userMessageId": user_message.id})
+                yield sse({"type": "meta", "userMessageId": user_message.id})
 
             collected = []
             try:
                 for chunk in stream_reply(history, materials_context):
                     collected.append(chunk)
-                    yield _sse({"type": "token", "text": chunk})
+                    yield sse({"type": "token", "text": chunk})
             except (LLMNotConfigured, LLMError) as exc:
-                yield _sse({"type": "error", "error": str(exc)})
+                yield sse({"type": "error", "error": str(exc)})
                 return
             except Exception:  # pylint: disable=broad-except
                 log.exception("ai_course_creator: chat stream failed")
-                yield _sse({"type": "error", "error": "The assistant ran into a problem."})
+                yield sse({"type": "error", "error": "The assistant ran into a problem."})
                 return
 
             full_text = "".join(collected)
@@ -181,7 +168,7 @@ class ChatView(APIView):
                 # Don't let a persistence hiccup kill the stream the user already saw.
                 log.exception("ai_course_creator: failed to persist assistant message")
 
-            yield _sse({
+            yield sse({
                 "type": "done",
                 "hasCourseJson": bool(course_json),
                 "currentPhase": session.current_phase,
@@ -202,30 +189,21 @@ class UploadMaterialView(APIView):
     permission_classes = (IsAuthenticated,)
 
     def post(self, request):
-        from opaque_keys import InvalidKeyError
-        from opaque_keys.edx.keys import CourseKey
-
         course_id = request.data.get("course_id")
         if not course_id:
             return Response({"error": "course_id is required."}, status=status.HTTP_400_BAD_REQUEST)
 
-        try:
-            course_key = CourseKey.from_string(course_id)
-        except InvalidKeyError:
-            return Response({"error": "Invalid course id."}, status=status.HTTP_400_BAD_REQUEST)
-        if not course_builder.user_can_author(request.user, course_key):
-            return Response(
-                {"error": "You do not have permission to edit this course."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
+        _course_key, error = require_course_author(request.user, course_id)
+        if error:
+            return error
 
-        session = _get_or_create_session(request.user, course_id)
+        session = get_or_create_session(request.user, course_id)
         uploaded = request.FILES.get("file")
         url = (request.data.get("url") or "").strip()
 
         try:
             if uploaded:
-                max_bytes = _max_upload_bytes()
+                max_bytes = max_upload_bytes()
                 if uploaded.size and uploaded.size > max_bytes:
                     return Response(
                         {"error": "File is too large."}, status=status.HTTP_400_BAD_REQUEST
@@ -285,10 +263,7 @@ class GenerateCourseView(APIView):
     permission_classes = (IsAuthenticated,)
 
     def post(self, request):
-        from opaque_keys import InvalidKeyError
-        from opaque_keys.edx.keys import CourseKey
-
-        if not _feature_enabled():
+        if not feature_enabled():
             return Response(
                 {"error": "The AI course creator is disabled."},
                 status=status.HTTP_403_FORBIDDEN,
@@ -298,18 +273,11 @@ class GenerateCourseView(APIView):
         if not course_id:
             return Response({"error": "course_id is required."}, status=status.HTTP_400_BAD_REQUEST)
 
-        try:
-            course_key = CourseKey.from_string(course_id)
-        except InvalidKeyError:
-            return Response({"error": "Invalid course id."}, status=status.HTTP_400_BAD_REQUEST)
+        _course_key, error = require_course_author(request.user, course_id)
+        if error:
+            return error
 
-        if not course_builder.user_can_author(request.user, course_key):
-            return Response(
-                {"error": "You do not have permission to edit this course."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
-
-        session = _get_or_create_session(request.user, course_id)
+        session = get_or_create_session(request.user, course_id)
         user = request.user
 
         def _set_status(generation_status, error=""):
@@ -324,24 +292,24 @@ class GenerateCourseView(APIView):
             try:
                 for event in generator.iter_generate(session):
                     if event["type"] == "progress":
-                        yield _sse({"type": "progress", "message": event["message"]})
+                        yield sse({"type": "progress", "message": event["message"]})
                     elif event["type"] == "outline":
                         course = event["course"]
             except (LLMNotConfigured, LLMError, generator.GenerationError) as exc:
                 _set_status(ChatSession.GenerationStatus.FAILED, str(exc))
-                yield _sse({"type": "error", "error": str(exc)})
+                yield sse({"type": "error", "error": str(exc)})
                 return
             except Exception:  # pylint: disable=broad-except
                 log.exception("ai_course_creator: generation failed")
                 msg = "Sherab couldn't generate the course. Please try again."
                 _set_status(ChatSession.GenerationStatus.FAILED, msg)
-                yield _sse({"type": "error", "error": msg})
+                yield sse({"type": "error", "error": msg})
                 return
 
             if not course:
                 msg = "Sherab couldn't generate the course. Please try again."
                 _set_status(ChatSession.GenerationStatus.FAILED, msg)
-                yield _sse({"type": "error", "error": msg})
+                yield sse({"type": "error", "error": msg})
                 return
 
             # Cache the generated outline so a write-only retry is free.
@@ -360,18 +328,18 @@ class GenerateCourseView(APIView):
 
             # 2. Write to the course outline (draft).
             _set_status(ChatSession.GenerationStatus.WRITING)
-            yield _sse({"type": "progress", "message": "Adding everything to your course outline…"})
+            yield sse({"type": "progress", "message": "Adding everything to your course outline…"})
             try:
                 result = course_builder.apply_course_json(course_id, user, course)
             except course_builder.CourseBuildError as exc:
                 _set_status(ChatSession.GenerationStatus.FAILED, str(exc))
-                yield _sse({"type": "error", "error": str(exc)})
+                yield sse({"type": "error", "error": str(exc)})
                 return
             except Exception:  # pylint: disable=broad-except
                 log.exception("ai_course_creator: write failed")
                 msg = "Could not add the course to the outline. Please try again."
                 _set_status(ChatSession.GenerationStatus.FAILED, msg)
-                yield _sse({"type": "error", "error": msg})
+                yield sse({"type": "error", "error": msg})
                 return
 
             session.created_section_locators = result.get("sectionLocators") or []
@@ -382,7 +350,7 @@ class GenerateCourseView(APIView):
                 "created_section_locators", "status", "generation_status",
                 "generation_error", "modified",
             ])
-            yield _sse({"type": "done", "counts": result.get("counts", {})})
+            yield sse({"type": "done", "counts": result.get("counts", {})})
 
         response = StreamingHttpResponse(event_stream(), content_type="text/event-stream")
         response["Cache-Control"] = "no-cache"
@@ -400,7 +368,7 @@ class SessionView(APIView):
         course_id = request.query_params.get("course_id")
         if not course_id:
             return Response({"error": "course_id is required."}, status=status.HTTP_400_BAD_REQUEST)
-        session = _get_or_create_session(request.user, course_id)
+        session = get_or_create_session(request.user, course_id)
         return Response(ChatSessionSerializer(session).data)
 
     def delete(self, request):
@@ -435,16 +403,4 @@ class ConfigView(APIView):
     permission_classes = (IsAuthenticated,)
 
     def get(self, request):
-        return Response({"enabled": _feature_enabled()})
-
-
-def _feature_enabled():
-    from django.conf import settings
-
-    return bool(getattr(settings, "AI_COURSE_CREATOR_ENABLED", True))
-
-
-def _max_upload_bytes():
-    from django.conf import settings
-
-    return getattr(settings, "AI_COURSE_CREATOR_MAX_UPLOAD_BYTES", 25 * 1024 * 1024)
+        return Response({"enabled": feature_enabled()})
