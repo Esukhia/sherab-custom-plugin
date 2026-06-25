@@ -7,8 +7,8 @@ def plugin_settings(settings):
     """
     Injects production settings into the Django settings object.
 
-    The Groq credentials (``GROQ_API_KEY`` / ``GROQ_MODEL``) are rendered into
-    the CMS production settings from Tutor ``config.yml`` by the
+    The Gemini credentials (``GEMINI_API_KEY`` / ``GEMINI_MODEL``) are rendered
+    into the CMS production settings from Tutor ``config.yml`` by the
     ``configuration_plugin`` patch, so there is nothing to override here beyond
     making sure the attributes exist.
     """

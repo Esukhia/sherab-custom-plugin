@@ -73,11 +73,24 @@ class ChatView(APIView):
             session.save(update_fields=["current_phase", "modified"])
 
     def post(self, request):
+        from opaque_keys import InvalidKeyError
+        from opaque_keys.edx.keys import CourseKey
+
         course_id = request.data.get("course_id")
         message_text = (request.data.get("message") or "").strip()
         edit_message_id = request.data.get("edit_message_id")
         if not course_id:
             return Response({"error": "course_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            course_key = CourseKey.from_string(course_id)
+        except InvalidKeyError:
+            return Response({"error": "Invalid course id."}, status=status.HTTP_400_BAD_REQUEST)
+        if not course_builder.user_can_author(request.user, course_key):
+            return Response(
+                {"error": "You do not have permission to edit this course."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
         session = _get_or_create_session(request.user, course_id)
 
@@ -189,9 +202,22 @@ class UploadMaterialView(APIView):
     permission_classes = (IsAuthenticated,)
 
     def post(self, request):
+        from opaque_keys import InvalidKeyError
+        from opaque_keys.edx.keys import CourseKey
+
         course_id = request.data.get("course_id")
         if not course_id:
             return Response({"error": "course_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            course_key = CourseKey.from_string(course_id)
+        except InvalidKeyError:
+            return Response({"error": "Invalid course id."}, status=status.HTTP_400_BAD_REQUEST)
+        if not course_builder.user_can_author(request.user, course_key):
+            return Response(
+                {"error": "You do not have permission to edit this course."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
         session = _get_or_create_session(request.user, course_id)
         uploaded = request.FILES.get("file")
