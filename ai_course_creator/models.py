@@ -47,6 +47,10 @@ class ChatSession(TimeStampedModel):
     # Stored as a string (course key) rather than a FK because the course may
     # not yet have a CourseOverview row when the session starts.
     course_id = models.CharField(max_length=255, db_index=True)
+    # Empty for the whole-course creator flow. For the per-section editor it
+    # holds the chapter (section) usage key, so each section gets its own
+    # conversation. Part of the uniqueness key below.
+    section_locator = models.CharField(max_length=255, db_index=True, blank=True, default="")
     status = models.CharField(
         max_length=20,
         choices=Status.choices,
@@ -72,8 +76,10 @@ class ChatSession(TimeStampedModel):
         app_label = "ai_course_creator"
         verbose_name = "Chat Session"
         verbose_name_plural = "Chat Sessions"
-        # One active session per user+course keeps resume logic simple.
-        unique_together = ("user", "course_id")
+        # One session per user+course+section. The creator flow uses an empty
+        # section_locator; each per-section editor conversation uses the
+        # chapter's usage key.
+        unique_together = ("user", "course_id", "section_locator")
 
     def __str__(self):
         return f"{self.user.username} · {self.course_id}"
