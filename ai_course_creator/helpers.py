@@ -14,7 +14,7 @@ from opaque_keys.edx.keys import CourseKey
 from rest_framework import status
 from rest_framework.response import Response
 
-from .models import ChatSession
+from .models import ChatMessage, ChatSession
 from .services import course_builder
 
 
@@ -23,10 +23,38 @@ def sse(payload):
     return f"data: {json.dumps(payload)}\n\n"
 
 
-def get_or_create_session(user, course_id):
-    """Fetch or create the conversation for a (user, course)."""
-    session, _created = ChatSession.objects.get_or_create(user=user, course_id=course_id)
+def get_or_create_session(user, course_id, section_locator=""):
+    """Fetch or create the conversation for a (user, course[, section])."""
+    session, _created = ChatSession.objects.get_or_create(
+        user=user, course_id=course_id, section_locator=section_locator
+    )
     return session
+
+
+def truncate_for_edit(session, edit_message_id, message_text):
+    """
+    Edit-and-resend: validate the edited user message, then drop it and every
+    message after it. ids are monotonic with creation order, so ``>= target``
+    removes the stale assistant reply and any later turns in one shot.
+
+    Returns ``(target, None)`` on success, or ``(None, Response)`` carrying the
+    appropriate error when the new text is empty or the message is gone. Callers
+    do ``target, error = truncate_for_edit(...); if error: return error``.
+    """
+    if not message_text:
+        return None, Response(
+            {"error": "An edited message cannot be empty."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    try:
+        target = session.messages.get(pk=edit_message_id, role=ChatMessage.Role.USER)
+    except ChatMessage.DoesNotExist:
+        return None, Response(
+            {"error": "That message no longer exists."},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+    session.messages.filter(pk__gte=target.pk).delete()
+    return target, None
 
 
 def require_course_author(user, course_id):

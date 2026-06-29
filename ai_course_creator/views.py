@@ -15,6 +15,7 @@ authenticated user, and course-mutating actions additionally check course
 author access.
 """
 
+import json
 import logging
 
 from django.http import StreamingHttpResponse
@@ -31,6 +32,7 @@ from .helpers import (
     max_upload_bytes,
     require_course_author,
     sse,
+    truncate_for_edit,
 )
 from .models import ChatMessage, ChatSession, UploadedMaterial
 from .serializers import ChatSessionSerializer
@@ -91,21 +93,9 @@ class ChatView(APIView):
         # then re-ask from that point with the new text. Phase is recomputed from
         # the surviving assistant messages so the indicator rolls back correctly.
         if edit_message_id is not None:
-            if not message_text:
-                return Response(
-                    {"error": "An edited message cannot be empty."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-            try:
-                target = session.messages.get(pk=edit_message_id, role=ChatMessage.Role.USER)
-            except ChatMessage.DoesNotExist:
-                return Response(
-                    {"error": "That message no longer exists."},
-                    status=status.HTTP_404_NOT_FOUND,
-                )
-            # ids are monotonic with creation order, so >= the target drops it and
-            # everything after it in one shot.
-            session.messages.filter(pk__gte=target.pk).delete()
+            _target, error = truncate_for_edit(session, edit_message_id, message_text)
+            if error:
+                return error
             self._recompute_phase(session)
 
         # Persist the user's turn (an empty message is allowed for the very first
@@ -201,6 +191,9 @@ class SectionContentView(APIView):
                 {"error": "course_id and section_locator are required."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        _course_key, error = require_course_author(request.user, course_id)
+        if error:
+            return error
         try:
             tree = section_editor.read_section(course_id, request.user, section_locator)
         except section_editor.SectionEditError as exc:
@@ -225,6 +218,10 @@ class SectionChatView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        _course_key, error = require_course_author(request.user, course_id)
+        if error:
+            return error
+
         # Read the current section content up front: it both seeds the model's
         # awareness of what's there and validates the locator/permission before
         # we open a streaming response (errors are easier to surface as JSON).
@@ -233,23 +230,13 @@ class SectionChatView(APIView):
         except section_editor.SectionEditError as exc:
             return Response({"error": str(exc)}, status=status.HTTP_404_NOT_FOUND)
 
-        session = _get_or_create_session(request.user, course_id, section_locator=section_locator)
+        session = get_or_create_session(request.user, course_id, section_locator=section_locator)
 
         # Edit & resend: drop the edited message and everything after it.
         if edit_message_id is not None:
-            if not message_text:
-                return Response(
-                    {"error": "An edited message cannot be empty."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-            try:
-                target = session.messages.get(pk=edit_message_id, role=ChatMessage.Role.USER)
-            except ChatMessage.DoesNotExist:
-                return Response(
-                    {"error": "That message no longer exists."},
-                    status=status.HTTP_404_NOT_FOUND,
-                )
-            session.messages.filter(pk__gte=target.pk).delete()
+            _target, error = truncate_for_edit(session, edit_message_id, message_text)
+            if error:
+                return error
 
         user_message = None
         if message_text:
@@ -274,7 +261,7 @@ class SectionChatView(APIView):
 
         def event_stream():
             if user_message is not None:
-                yield _sse({"type": "meta", "userMessageId": user_message.id})
+                yield sse({"type": "meta", "userMessageId": user_message.id})
 
             collected = []
             try:
@@ -285,13 +272,13 @@ class SectionChatView(APIView):
                     max_tokens=SECTION_CHAT_MAX_TOKENS,
                 ):
                     collected.append(chunk)
-                    yield _sse({"type": "token", "text": chunk})
+                    yield sse({"type": "token", "text": chunk})
             except (LLMNotConfigured, LLMError) as exc:
-                yield _sse({"type": "error", "error": str(exc)})
+                yield sse({"type": "error", "error": str(exc)})
                 return
             except Exception:  # pylint: disable=broad-except
                 log.exception("ai_course_creator: section chat stream failed")
-                yield _sse({"type": "error", "error": "The assistant ran into a problem."})
+                yield sse({"type": "error", "error": "The assistant ran into a problem."})
                 return
 
             full_text = "".join(collected)
@@ -304,7 +291,7 @@ class SectionChatView(APIView):
             except Exception:  # pylint: disable=broad-except
                 log.exception("ai_course_creator: failed to persist section assistant message")
 
-            yield _sse({
+            yield sse({
                 "type": "done",
                 "canApply": can_apply,
                 "userMessageId": user_message.id if user_message else None,
@@ -331,6 +318,10 @@ class ApplySectionView(APIView):
                 {"error": "course_id and section_locator are required."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+
+        _course_key, error = require_course_author(request.user, course_id)
+        if error:
+            return error
 
         try:
             session = ChatSession.objects.get(

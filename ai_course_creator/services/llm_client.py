@@ -363,57 +363,49 @@ def _friendly_llm_error(exc):
     return "Sherab ran into a problem. Please try again in a moment."
 
 
-def extract_course_json(text):
-    """Pull the embedded COURSE_JSON block out of an assistant message."""
+def _extract_json_block(text, start, end, label):
+    """Pull a fenced JSON block delimited by ``start``/``end`` out of a message."""
     import json  # pylint: disable=import-outside-toplevel
 
-    if COURSE_JSON_START not in text or COURSE_JSON_END not in text:
+    if start not in text or end not in text:
         return None
     try:
-        raw = text.split(COURSE_JSON_START, 1)[1].split(COURSE_JSON_END, 1)[0].strip()
+        raw = text.split(start, 1)[1].split(end, 1)[0].strip()
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[1] if "\n" in raw else raw
             raw = raw.rsplit("```", 1)[0]
         return json.loads(raw.strip())
     except (IndexError, ValueError):
-        log.warning("ai_course_creator: failed to parse COURSE_JSON block")
+        log.warning("ai_course_creator: failed to parse %s block", label)
         return None
+
+
+def _strip_block(text, start, end):
+    """Remove a block delimited by ``start``/``end`` so it is never shown to the user."""
+    if start not in text:
+        return text
+    before = text.split(start, 1)[0]
+    after = ""
+    if end in text:
+        after = text.split(end, 1)[1]
+    return (before + after).strip()
+
+
+def extract_course_json(text):
+    """Pull the embedded COURSE_JSON block out of an assistant message."""
+    return _extract_json_block(text, COURSE_JSON_START, COURSE_JSON_END, "COURSE_JSON")
 
 
 def strip_course_json(text):
     """Remove the COURSE_JSON block so it is never shown to the user."""
-    if COURSE_JSON_START not in text:
-        return text
-    before = text.split(COURSE_JSON_START, 1)[0]
-    after = ""
-    if COURSE_JSON_END in text:
-        after = text.split(COURSE_JSON_END, 1)[1]
-    return (before + after).strip()
+    return _strip_block(text, COURSE_JSON_START, COURSE_JSON_END)
 
 
 def extract_section_edits(text):
     """Pull the embedded SECTION_EDITS desired-tree block out of an assistant message."""
-    import json  # pylint: disable=import-outside-toplevel
-
-    if SECTION_EDITS_START not in text or SECTION_EDITS_END not in text:
-        return None
-    try:
-        raw = text.split(SECTION_EDITS_START, 1)[1].split(SECTION_EDITS_END, 1)[0].strip()
-        if raw.startswith("```"):
-            raw = raw.split("\n", 1)[1] if "\n" in raw else raw
-            raw = raw.rsplit("```", 1)[0]
-        return json.loads(raw.strip())
-    except (IndexError, ValueError):
-        log.warning("ai_course_creator: failed to parse SECTION_EDITS block")
-        return None
+    return _extract_json_block(text, SECTION_EDITS_START, SECTION_EDITS_END, "SECTION_EDITS")
 
 
 def strip_section_edits(text):
     """Remove the SECTION_EDITS block so it is never shown to the user."""
-    if SECTION_EDITS_START not in text:
-        return text
-    before = text.split(SECTION_EDITS_START, 1)[0]
-    after = ""
-    if SECTION_EDITS_END in text:
-        after = text.split(SECTION_EDITS_END, 1)[1]
-    return (before + after).strip()
+    return _strip_block(text, SECTION_EDITS_START, SECTION_EDITS_END)
