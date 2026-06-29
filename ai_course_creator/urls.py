@@ -8,10 +8,13 @@ absolute paths are e.g. ``/api/ai-course-creator/chat/`` on the Studio host.
 from django.urls import path
 
 from .views import (
+    ApplySectionView,
     ChatView,
     ConfigView,
     GenerateCourseView,
     MaterialDetailView,
+    SectionChatView,
+    SectionContentView,
     SessionView,
     UploadMaterialView,
 )
@@ -25,4 +28,7 @@ urlpatterns = [
     path("api/ai-course-creator/generate/", GenerateCourseView.as_view(), name="generate"),
     path("api/ai-course-creator/config/", ConfigView.as_view(), name="config"),
     path("api/ai-course-creator/session/", SessionView.as_view(), name="session"),
+    path("api/ai-course-creator/section-content/", SectionContentView.as_view(), name="section-content"),
+    path("api/ai-course-creator/section-chat/", SectionChatView.as_view(), name="section-chat"),
+    path("api/ai-course-creator/apply-section/", ApplySectionView.as_view(), name="apply-section"),
 ]
