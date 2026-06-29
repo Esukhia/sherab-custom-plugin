@@ -30,12 +30,8 @@ MOUNTS:
   - /path/to/sherab-custom-plugin   # dev: live-mounted into LMS & CMS
 ```
 
-Python dependencies (see [`requirements/common.in`](requirements/common.in)):
-
-- `google-genai` — Gemini client for `ai_course_creator`
-- `pypdf`, `python-docx`, `python-pptx` — extract text from uploaded course materials
-- `django-ckeditor` — rich-text fields in `course_partnerships`
-- `reportlab`, `django-environ`
+Python dependencies are listed in [`requirements/common.in`](requirements/common.in)
+and installed automatically by `setup.py`.
 
 The apps register through the entry points in [`setup.py`](setup.py):
 
