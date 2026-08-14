@@ -1,9 +1,67 @@
 from rest_framework import serializers
 
-from course_partnerships.models import PartnerOrganizationMapping
+from course_partnerships.models import Partner, PartnerOrganizationMapping
 
 
-class PartnerOrganizationMappingSerializer(serializers.ModelSerializer):
+class LogoUrlMixin:
+    """
+    Shared resolution of a partner logo ImageField to a fully-qualified URL.
+
+    Used by every serializer that exposes a partner logo, so the null-handling
+    and absolute-URL rules stay identical across endpoints.
+    """
+
+    def logo_url(self, logo):
+        """
+        Return a fully-qualified URL for the given logo, or None if unset.
+
+        Args:
+            logo (ImageFieldFile or None): The logo field to resolve.
+
+        Returns:
+            str or None: Fully-qualified logo URL if available, else None.
+        """
+        if not logo or not hasattr(logo, "url"):
+            return None
+
+        request = self.context.get("request")
+        # Storage backends that serve from an external host (e.g. S3) already
+        # return an absolute URL, in which case build_absolute_uri is a no-op.
+        return request.build_absolute_uri(logo.url) if request else logo.url
+
+
+class PartnerSerializer(LogoUrlMixin, serializers.ModelSerializer):
+    """
+    Serializer for partners, used for full (unfiltered) partner listings such
+    as the homepage schools-and-partners carousel.
+
+    Serializes:
+        - partner_name (str): The partner's name
+        - logo (str): Fully-qualified URL to the partner's logo
+        - slug (str): The partner's slug, used to link to its school page (/schools/<slug>/)
+    """
+
+    partner_name = serializers.CharField(source="name")
+    logo = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Partner
+        fields = ["partner_name", "logo", "slug"]
+
+    def get_logo(self, obj):
+        """
+        Returns the fully-qualified URL for the partner's logo.
+
+        Args:
+            obj (Partner): Partner instance
+
+        Returns:
+            str or None: Fully-qualified logo URL if available, else None
+        """
+        return self.logo_url(obj.logo)
+
+
+class PartnerOrganizationMappingSerializer(LogoUrlMixin, serializers.ModelSerializer):
     """
     Serializer for Partner-Organization mappings.
 
@@ -43,7 +101,4 @@ class PartnerOrganizationMappingSerializer(serializers.ModelSerializer):
         Returns:
             str or None: Fully-qualified logo URL if available, else None
         """
-        request = self.context.get("request")
-        if obj.partner.logo and hasattr(obj.partner.logo, "url"):
-            return request.build_absolute_uri(obj.partner.logo.url)
-        return None
+        return self.logo_url(obj.partner.logo)

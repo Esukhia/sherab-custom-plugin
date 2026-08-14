@@ -5,11 +5,11 @@ from django.db.models import Count
 from django.http import Http404
 from django.views.generic import View
 from openedx.core.djangoapps.content.course_overviews.models import CourseOverview
-from rest_framework.response import Response
-from rest_framework.views import APIView
+from rest_framework.generics import ListAPIView
+from rest_framework.permissions import AllowAny
 
 from .models import *
-from .serializers import PartnerOrganizationMappingSerializer
+from .serializers import PartnerOrganizationMappingSerializer, PartnerSerializer
 
 log = logging.getLogger(__name__)
 
@@ -74,7 +74,28 @@ class CenterDetailView(View):
         return render_to_response("course_partnerships/center-details.html", context)
 
 
-class PartnerListAPIView(APIView):
+class PublicPartnerListAPIView(ListAPIView):
+    """
+    Base class for the public partner listing endpoints.
+
+    Both endpoints below are read by anonymous clients (the homepage carousel
+    and the mobile app) and both are expected to return their whole list as a
+    bare JSON array, so the shared settings live here:
+
+    - authentication is skipped entirely rather than attempted and failed;
+    - anonymous access is granted explicitly, so a future change to the
+      platform-wide permission default can't silently lock these down;
+    - the platform-wide pagination default is disabled, which would otherwise
+      cap responses at PAGE_SIZE and wrap them in a
+      {count, next, previous, results} envelope that no client here expects.
+    """
+
+    authentication_classes = []
+    permission_classes = [AllowAny]
+    pagination_class = None
+
+
+class PartnerListAPIView(PublicPartnerListAPIView):
     """
     API endpoint to retrieve partner-organization mappings.
 
@@ -98,19 +119,35 @@ class PartnerListAPIView(APIView):
         ]
     """
 
-    # This API is intended for public access, so no authentication is required.
-    authentication_classes = []
+    serializer_class = PartnerOrganizationMappingSerializer
+    queryset = PartnerOrganizationMapping.objects.filter(show_in_mobile_app=True)
 
-    def get(self, request):
-        """
-        Handles GET requests to retrieve visible partner-organization mappings.
 
-        Args:
-            request (HttpRequest): The incoming HTTP request.
+class PartnerHomepageListAPIView(PublicPartnerListAPIView):
+    """
+    API endpoint to retrieve all partners, for display on the homepage
+    schools-and-partners carousel. Unlike PartnerListAPIView, this is not
+    filtered by `show_in_mobile_app` — it mirrors the old homepage template's
+    `Partner.objects.all()` behavior, since the homepage carousel and the
+    mobile app's partner list serve different purposes and audiences.
 
-        Returns:
-            Response: A list of serialized mappings.
-        """
-        mappings = PartnerOrganizationMapping.objects.filter(show_in_mobile_app=True)
-        serializer = PartnerOrganizationMappingSerializer(mappings, many=True, context={"request": request})
-        return Response(serializer.data)
+    Method:
+        GET
+
+    Example Response (200 OK):
+        [
+            {
+                "partner_name": "Partner Name",
+                "logo": "https://yourdomain.com/../partner_logo.png",
+                "slug": "partner-slug"
+            },
+            ...
+        ]
+    """
+
+    serializer_class = PartnerSerializer
+
+    # Explicit ordering keeps the carousel stable: an unordered queryset lets
+    # the database return rows in any order, which can reshuffle the logos
+    # between requests.
+    queryset = Partner.objects.order_by("name")
