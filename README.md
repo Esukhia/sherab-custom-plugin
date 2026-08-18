@@ -194,6 +194,9 @@ courses. Provides partner/center detail pages and a mobile-app JSON API.
 - `PartnerOrganizationMapping` — maps a `Partner` to an `Organization`, with a mobile-app
   visibility toggle and optional display-name override.
 - `CourseCreator` — instructor profiles (name, title, years of experience, bio, picture).
+- `HeroCourse` — courses curated for the homepage hero cards, with an explicit `order`
+  and an `is_active` toggle. Shown to signed-out visitors, and used to fill slots a
+  signed-in visitor's own enrollments don't.
 
 ### API endpoints
 
@@ -202,6 +205,9 @@ courses. Provides partner/center detail pages and a mobile-app JSON API.
 | GET | `/schools/<slug>/` | Partner detail page (centers, categories, courses, creators). |
 | GET | `/schools/<partner_slug>/<center_slug>/` | Center detail page. |
 | GET | `/api/partners/` | Mobile-app JSON of partner-organization mappings. |
+| GET | `/api/partners/homepage/` | All partners, for the homepage schools-and-partners carousel. |
+| GET | `/api/categories/homepage/` | Homepage course categories, each with its visible courses. |
+| GET | `/api/courses/hero/` | Courses for the homepage hero cards. Personalized: a signed-in caller gets their most recent enrollments, newest first, with curated `HeroCourse` picks filling any leftover slot; a signed-out caller gets the curated picks alone. |
 
 ### Management commands
 

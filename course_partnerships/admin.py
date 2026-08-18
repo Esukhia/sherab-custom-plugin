@@ -26,6 +26,20 @@ class EnhancedCourseAdmin(admin.ModelAdmin):
     raw_id_fields = ["course", "partner", "center", "category"]
 
 
+class HeroCourseAdmin(admin.ModelAdmin):
+    # `order` and `is_active` are editable from the list so that rearranging the
+    # two hero cards is one submit rather than a trip through each row's form.
+    list_display = ["course", "order", "is_active"]
+    list_editable = ["order", "is_active"]
+    list_filter = ["is_active"]
+    # Spans the relation rather than searching the raw key, so staff can find a
+    # pick by course title. CourseOverview's own admin is searchable the same
+    # way, which is what makes the raw_id magnifier usable here.
+    search_fields = ["course__id", "course__display_name"]
+    raw_id_fields = ["course"]
+    ordering = ["order", "id"]
+
+
 class PartnerOrganizationMappingAdmin(admin.ModelAdmin):
     list_display = ("partner", "organization", "display_name", "show_in_mobile_app")
     list_filter = ("show_in_mobile_app", "partner", "organization")
@@ -63,5 +77,6 @@ admin.site.register(Partner, PartnerAdmin)
 admin.site.register(Category, CategoryAdmin)
 admin.site.register(EnhancedCourse, EnhancedCourseAdmin)
 admin.site.register(Center, CenterAdmin)
+admin.site.register(HeroCourse, HeroCourseAdmin)
 admin.site.register(PartnerOrganizationMapping, PartnerOrganizationMappingAdmin)
 admin.site.register(CourseCreator, CourseCreatorAdmin)

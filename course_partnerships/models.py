@@ -154,6 +154,45 @@ class EnhancedCourse(TimeStampedModel):
         course.save()
 
 
+class HeroCourse(TimeStampedModel):
+    """
+    A course featured in the homepage hero's pair of floating cards.
+
+    Signed-in visitors see their own most recently enrolled courses there, so
+    these curated picks are what a signed-out visitor sees instead — and what
+    fills a leftover slot for a signed-in visitor who has not enrolled in two
+    courses yet.
+    """
+
+    course = models.OneToOneField(
+        CourseOverview,
+        db_constraint=False,
+        db_index=True,
+        on_delete=models.CASCADE,
+        help_text=_("Course to feature in the homepage hero."),
+    )
+    order = models.PositiveIntegerField(
+        default=0,
+        help_text=_("Lower numbers are shown first. Only the first two active picks are used."),
+    )
+    is_active = models.BooleanField(
+        default=True,
+        help_text=_("Uncheck to retire a pick without deleting it."),
+    )
+
+    def __str__(self):
+        return f"{self.course_id}"
+
+    class Meta:
+        app_label = "course_partnerships"
+        # The hero's front/back arrangement is the admin's choice, so ordering
+        # belongs on the model rather than being re-stated at each call site.
+        # The id tiebreaker keeps two picks sharing an `order` from reshuffling.
+        ordering = ("order", "id")
+        verbose_name = "Homepage Hero Course"
+        verbose_name_plural = "Homepage Hero Courses"
+
+
 class PartnerOrganizationMapping(TimeStampedModel):
     """
     Mapping model between Partners and Organizations.
