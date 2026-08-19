@@ -196,7 +196,10 @@ courses. Provides partner/center detail pages and a mobile-app JSON API.
 - `CourseCreator` — instructor profiles (name, title, years of experience, bio, picture).
 - `HeroCourse` — courses curated for the homepage hero cards, with an explicit `order`
   and an `is_active` toggle. Shown to signed-out visitors, and used to fill slots a
-  signed-in visitor's own enrollments don't.
+  signed-in visitor's own enrollments don't. A `new_until` date badges the course as new
+  until it passes — independently of `is_active`, so a course reaching the hero only
+  through a learner's own enrollments can be badged by adding it here and leaving
+  `is_active` unchecked.
 
 ### API endpoints
 
@@ -207,7 +210,7 @@ courses. Provides partner/center detail pages and a mobile-app JSON API.
 | GET | `/api/partners/` | Mobile-app JSON of partner-organization mappings. |
 | GET | `/api/partners/homepage/` | All partners, for the homepage schools-and-partners carousel. |
 | GET | `/api/categories/homepage/` | Homepage course categories, each with its visible courses. |
-| GET | `/api/courses/hero/` | Courses for the homepage hero cards. Personalized: a signed-in caller gets their most recent enrollments, newest first, with curated `HeroCourse` picks filling any leftover slot; a signed-out caller gets the curated picks alone. |
+| GET | `/api/courses/hero/` | Courses for the homepage hero cards. Personalized: a signed-in caller gets their most recent enrollments, newest first, with curated `HeroCourse` picks filling any leftover slot; a signed-out caller gets the curated picks alone. Each card also reports `is_new`, true while the course's `HeroCourse.new_until` date has not passed. |
 
 ### Management commands
 

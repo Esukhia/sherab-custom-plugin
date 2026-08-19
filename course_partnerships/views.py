@@ -2,8 +2,9 @@ import logging
 
 from common.djangoapps.edxmako.shortcuts import render_to_response
 from common.djangoapps.student.models import CourseEnrollment
-from django.db.models import Count, Prefetch
+from django.db.models import Count, Exists, OuterRef, Prefetch
 from django.http import Http404
+from django.utils import timezone
 from django.utils.decorators import method_decorator
 from django.views.decorators.cache import never_cache
 from django.views.decorators.vary import vary_on_headers
@@ -17,6 +18,7 @@ from xmodule.course_block import CATALOG_VISIBILITY_CATALOG_AND_ABOUT
 
 from .models import *
 from .serializers import (
+    HeroCourseCardSerializer,
     HomepageCategorySerializer,
     HomepageCourseSerializer,
     PartnerOrganizationMappingSerializer,
@@ -278,6 +280,10 @@ class HeroCourseListAPIView(ListAPIView):
     Fewer than `HERO_COURSE_COUNT` courses is a valid response, not an error:
     nothing is curated on a fresh install.
 
+    A card reports `is_new` when staff gave the course a `HeroCourse.new_until`
+    date that has not passed, whichever route the card took into the hero — a
+    curated pick or the caller's own enrollment.
+
     Method:
         GET
 
@@ -288,7 +294,8 @@ class HeroCourseListAPIView(ListAPIView):
                 "title": "Course Title",
                 "image_url": "https://yourdomain.com/../course_image.jpg",
                 "provider_name": "Provider Name",
-                "provider_logo": "https://yourdomain.com/../provider_logo.png"
+                "provider_logo": "https://yourdomain.com/../provider_logo.png",
+                "is_new": false
             },
             ...
         ]
@@ -304,7 +311,7 @@ class HeroCourseListAPIView(ListAPIView):
     # an already-evaluated list that a filter backend could not handle.
     pagination_class = None
     filter_backends = []
-    serializer_class = HomepageCourseSerializer
+    serializer_class = HeroCourseCardSerializer
 
     def get_queryset(self):
         """
@@ -383,14 +390,39 @@ class HeroCourseListAPIView(ListAPIView):
         Return the base queryset every hero card is serialized from.
 
         Returns:
-            QuerySet: EnhancedCourse rows with their branding relations loaded.
+            QuerySet: EnhancedCourse rows with their branding relations loaded
+                and the "new course" flag annotated on.
         """
         # select_related is a correctness guard as much as a performance one, as
         # in HomepageCategoryListAPIView above: the link to CourseOverview has
         # no database constraint, so the join also discards rows pointing at
         # courses that no longer exist, which would otherwise raise when
         # serialized.
-        return EnhancedCourse.objects.select_related("course", "partner", "center")
+        return EnhancedCourse.objects.select_related("course", "partner", "center").annotate(
+            # Annotated on the shared base queryset rather than applied to the
+            # finished list, so the badge follows the course down every route
+            # into the hero — a learner's own enrollment as much as a curated
+            # pick — without each route having to remember to ask for it. As a
+            # correlated subquery it adds no round trip, and it reads the unique
+            # index HeroCourse.course already carries.
+            #
+            # `is_active` is deliberately not part of this. It decides whether a
+            # course is featured as a curated pick; `new_until` decides whether
+            # it is badged. A retired pick with a future date still badges its
+            # course wherever that course reaches the hero.
+            is_new=Exists(
+                HeroCourse.objects.filter(
+                    course_id=OuterRef("course_id"),
+                    # Inclusive, matching the help_text's promise that the badge
+                    # shows up to and including the chosen date. A null
+                    # `new_until` never matches, so "blank means no badge" needs
+                    # no special case. localdate rather than now().date() so the
+                    # cutoff agrees with the date the admin showed the staff
+                    # member who set it, were TIME_ZONE ever moved off UTC.
+                    new_until__gte=timezone.localdate(),
+                )
+            ),
+        )
 
     @staticmethod
     def _in_key_order(queryset, course_ids):

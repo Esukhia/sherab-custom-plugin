@@ -232,6 +232,34 @@ class HomepageCourseSerializer(AbsoluteUrlMixin, serializers.ModelSerializer):
         return self.logo_url(provider.logo) if provider else None
 
 
+class HeroCourseCardSerializer(HomepageCourseSerializer):
+    """
+    Serializer for a course on one of the homepage hero cards.
+
+    Extends the homepage card with the one field only the hero renders, rather
+    than adding it to the shared serializer, so the category tabs' response
+    shape is left exactly as it was.
+
+    Serializes:
+        - everything HomepageCourseSerializer does
+        - is_new (bool): Whether the course is new enough to badge, meaning
+          staff gave it a `new_until` date that has not passed yet
+    """
+
+    # Read straight off the `is_new` annotation HeroCourseListAPIView puts on its
+    # queryset, so there is no per-object query and no date arithmetic here. The
+    # default is what makes a missing annotation render an unbadged card rather
+    # than raise: DRF falls back to it when the attribute is absent, and losing
+    # the whole hero over a decorative badge would be the worse trade.
+    is_new = serializers.BooleanField(read_only=True, default=False)
+
+    class Meta(HomepageCourseSerializer.Meta):
+        # Concatenation builds a new list. Never `+=` or `.append()` here — that
+        # would mutate the parent's `fields` and leak `is_new` into the homepage
+        # categories response.
+        fields = HomepageCourseSerializer.Meta.fields + ["is_new"]
+
+
 class HomepageCategorySerializer(serializers.ModelSerializer):
     """
     Serializer for a homepage course category and the courses filed under it.

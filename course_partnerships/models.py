@@ -179,6 +179,22 @@ class HeroCourse(TimeStampedModel):
         default=True,
         help_text=_("Uncheck to retire a pick without deleting it."),
     )
+    # A date rather than a checkbox so the badge retires itself. Independent of
+    # `is_active` on purpose: that field decides whether the course is used as a
+    # curated pick, this one decides whether the course looks new, and a course
+    # can be either without being both.
+    new_until = models.DateField(
+        null=True,
+        blank=True,
+        help_text=_(
+            "Show a 'New course' badge on this course's hero card up to and "
+            "including this date. Leave blank for no badge. Independent of "
+            "'is active': a retired pick still badges its course wherever that "
+            "course reaches the hero, so a course that only gets there through a "
+            "learner's own enrollments can be badged by adding it here with "
+            "'is active' unchecked."
+        ),
+    )
 
     def __str__(self):
         return f"{self.course_id}"

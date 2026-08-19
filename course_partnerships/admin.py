@@ -1,4 +1,6 @@
 from django.contrib import admin
+from django.utils import timezone
+
 from .models import *
 
 
@@ -27,10 +29,12 @@ class EnhancedCourseAdmin(admin.ModelAdmin):
 
 
 class HeroCourseAdmin(admin.ModelAdmin):
-    # `order` and `is_active` are editable from the list so that rearranging the
-    # two hero cards is one submit rather than a trip through each row's form.
-    list_display = ["course", "order", "is_active"]
-    list_editable = ["order", "is_active"]
+    # `order`, `is_active` and the badge date are editable from the list so that
+    # rearranging the two hero cards, or extending a badge, is one submit rather
+    # than a trip through each row's form. `course` stays out of list_editable
+    # because it is the column linking to the change form.
+    list_display = ["course", "order", "is_active", "new_until", "badge_showing"]
+    list_editable = ["order", "is_active", "new_until"]
     list_filter = ["is_active"]
     # Spans the relation rather than searching the raw key, so staff can find a
     # pick by course title. CourseOverview's own admin is searchable the same
@@ -38,6 +42,18 @@ class HeroCourseAdmin(admin.ModelAdmin):
     search_fields = ["course__id", "course__display_name"]
     raw_id_fields = ["course"]
     ordering = ["order", "id"]
+
+    # `new_until` on its own does not say whether the badge is up right now: a
+    # date that slipped past yesterday looks much like one that has not. Computed,
+    # so it cannot join list_editable (admin.E121 requires a real model field) or
+    # list_filter; last in list_display purely so the editable columns read
+    # together.
+    @admin.display(boolean=True, description="Badge live")
+    def badge_showing(self, obj):
+        """
+        Returns whether this pick's badge is showing on the site right now.
+        """
+        return bool(obj.new_until and obj.new_until >= timezone.localdate())
 
 
 class PartnerOrganizationMappingAdmin(admin.ModelAdmin):
