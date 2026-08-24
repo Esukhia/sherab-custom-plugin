@@ -194,13 +194,9 @@ courses. Provides partner/center detail pages and a mobile-app JSON API.
 - `PartnerOrganizationMapping` — maps a `Partner` to an `Organization`, with a mobile-app
   visibility toggle and optional display-name override.
 - `CourseCreator` — instructor profiles (name, title, years of experience, bio, picture).
-- `HeroCourse` — courses curated for the homepage hero cards. `order` sets their
-  position and `is_active` toggles whether a course is used as a curated pick.
-  Shown to signed-out visitors, and used to fill slots a signed-in visitor's own
-  enrollments don't.
-  `new_until` sets how long a course's "new" badge shows, independently of
-  `is_active` — a course can be badged without being a curated pick, e.g. one a
-  learner only reaches through their own enrollment.
+- `HeroCourse` — courses curated for the homepage hero cards (see `/api/courses/hero/`
+  below). `order`: display position. `is_active`: whether it's used as a curated pick.
+  `new_until`: shows a "New course" badge until this date, independent of `is_active`.
 
 ### API endpoints
 
