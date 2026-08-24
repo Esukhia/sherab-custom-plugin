@@ -179,20 +179,14 @@ class HeroCourse(TimeStampedModel):
         default=True,
         help_text=_("Uncheck to retire a pick without deleting it."),
     )
-    # A date rather than a checkbox so the badge retires itself. Independent of
-    # `is_active` on purpose: that field decides whether the course is used as a
-    # curated pick, this one decides whether the course looks new, and a course
-    # can be either without being both.
+    # A date, not a checkbox, so the badge retires itself. Independent of
+    # is_active: that controls curation, this controls the badge.
     new_until = models.DateField(
         null=True,
         blank=True,
         help_text=_(
-            "Show a 'New course' badge on this course's hero card up to and "
-            "including this date. Leave blank for no badge. Independent of "
-            "'is active': a retired pick still badges its course wherever that "
-            "course reaches the hero, so a course that only gets there through a "
-            "learner's own enrollments can be badged by adding it here with "
-            "'is active' unchecked."
+            "Show a 'New course' badge until this date. Leave blank for none. "
+            "Independent of 'is active'."
         ),
     )
 
@@ -201,9 +195,7 @@ class HeroCourse(TimeStampedModel):
 
     class Meta:
         app_label = "course_partnerships"
-        # The hero's front/back arrangement is the admin's choice, so ordering
-        # belongs on the model rather than being re-stated at each call site.
-        # The id tiebreaker keeps two picks sharing an `order` from reshuffling.
+        # id breaks ties between picks sharing the same order.
         ordering = ("order", "id")
         verbose_name = "Homepage Hero Course"
         verbose_name_plural = "Homepage Hero Courses"

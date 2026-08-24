@@ -20,7 +20,6 @@ from .models import *
 from .serializers import (
     HeroCourseCardSerializer,
     HomepageCategorySerializer,
-    HomepageCourseSerializer,
     PartnerOrganizationMappingSerializer,
     PartnerSerializer,
 )
@@ -30,11 +29,8 @@ log = logging.getLogger(__name__)
 # The homepage hero shows a fixed pair of floating course cards.
 HERO_COURSE_COUNT = 2
 
-# How far down the enrollment list to look for courses that resolve to an
-# EnhancedCourse row. Courses published before this plugin was installed have no
-# row — the course_published signal only covers publishes since — so scanning a
-# few extra enrollments keeps one such course from pushing a real enrollment out
-# of the hero in favour of a curated pick.
+# Look further than 2 enrollments in case some don't have an EnhancedCourse row
+# yet (courses added before this plugin was installed).
 ENROLLMENT_SCAN_LIMIT = 10
 
 
@@ -260,11 +256,8 @@ class HomepageCategoryListAPIView(PublicListAPIView):
         return [category for category in categories if category.visible_courses]
 
 
-# Unlike every other endpoint in this app, this response differs per caller and
-# carries a signed-in user's enrollment history, so it must not be stored by any
-# intermediary — a shared cache keyed on the URL alone would hand one learner's
-# courses to the next visitor. `Vary` states the same thing for caches that
-# honour it; `never_cache` is the one that does not need their cooperation.
+# Personalized per caller, so it must never be cached — a shared cache could
+# serve one learner's courses to another.
 @method_decorator(never_cache, name="dispatch")
 @method_decorator(vary_on_headers("Authorization", "Cookie"), name="dispatch")
 class HeroCourseListAPIView(ListAPIView):
@@ -301,14 +294,11 @@ class HeroCourseListAPIView(ListAPIView):
         ]
     """
 
-    # Authentication is attempted rather than skipped as in PublicListAPIView
-    # above, because the response depends on who is asking. The permission stays
-    # open so a signed-out visitor gets the curated picks instead of a 401.
+    # Response depends on who's asking, so auth is attempted (unlike
+    # PublicListAPIView) but stays optional, so signed-out visitors get 200s.
     authentication_classes = (JwtAuthentication, SessionAuthentication)
     permission_classes = [AllowAny]
-    # A short fixed-length list the hero renders as-is, so the platform's
-    # pagination envelope would only get in the way — and get_queryset returns
-    # an already-evaluated list that a filter backend could not handle.
+    # Fixed-length list rendered as-is — pagination and filtering don't apply.
     pagination_class = None
     filter_backends = []
     serializer_class = HeroCourseCardSerializer
@@ -342,23 +332,15 @@ class HeroCourseListAPIView(ListAPIView):
         if not user.is_authenticated:
             return []
 
+        # Ordering isn't the model default, so it has to be requested explicitly.
         course_ids = list(
             CourseEnrollment.objects.filter(user=user, is_active=True)
-            # CourseEnrollment.Meta.ordering is ('user', 'course'), so recency
-            # has to be asked for; the model carries a matching index on
-            # ('user', '-created'), which keeps this cheap. `created` is
-            # nullable and sorts last under DESC, which is the wanted reading of
-            # a missing date — treat it as the oldest. The `-id` tiebreaker
-            # settles two enrollments recorded in the same instant.
             .order_by("-created", "-id")
             .values_list("course_id", flat=True)[:ENROLLMENT_SCAN_LIMIT]
         )
 
-        # No visibility filter here, unlike the curated picks below: those
-        # fields govern whether a course may be advertised, and this user is
-        # already enrolled. Scoping the query to their own enrollments is the
-        # access check, and dropping a course they are taking because it is
-        # unlisted would replace their card with a marketing one.
+        # No visibility filter here: the user is already enrolled, so their own
+        # course should show even if it's unlisted from the public catalog.
         return self._in_key_order(self._enhanced_courses(), course_ids)[:HERO_COURSE_COUNT]
 
     def _curated(self):
@@ -371,13 +353,12 @@ class HeroCourseListAPIView(ListAPIView):
         """
         course_ids = list(
             HeroCourse.objects.filter(is_active=True)
-            # Ordering is declared on HeroCourse.Meta, but stating it here keeps
-            # the guarantee visible at the query the hero actually depends on.
-            .order_by("order", "id").values_list("course_id", flat=True)
+            .order_by("order", "id")
+            .values_list("course_id", flat=True)
         )
 
-        # These picks are shown to anonymous visitors, so they are held to the
-        # same public-listing rules as the homepage categories endpoint above.
+        # Shown to anonymous visitors, so held to the same visibility rules as
+        # the homepage categories endpoint above.
         queryset = self._enhanced_courses().filter(
             course__visible_to_staff_only=False,
             course__catalog_visibility=CATALOG_VISIBILITY_CATALOG_AND_ABOUT,
@@ -393,32 +374,14 @@ class HeroCourseListAPIView(ListAPIView):
             QuerySet: EnhancedCourse rows with their branding relations loaded
                 and the "new course" flag annotated on.
         """
-        # select_related is a correctness guard as much as a performance one, as
-        # in HomepageCategoryListAPIView above: the link to CourseOverview has
-        # no database constraint, so the join also discards rows pointing at
-        # courses that no longer exist, which would otherwise raise when
-        # serialized.
+        # select_related also drops courses removed from the modulestore (no DB
+        # constraint links them). is_new is annotated here so both enrollment
+        # and curated cards get it automatically; is_active is unrelated — it
+        # controls curation, not the badge.
         return EnhancedCourse.objects.select_related("course", "partner", "center").annotate(
-            # Annotated on the shared base queryset rather than applied to the
-            # finished list, so the badge follows the course down every route
-            # into the hero — a learner's own enrollment as much as a curated
-            # pick — without each route having to remember to ask for it. As a
-            # correlated subquery it adds no round trip, and it reads the unique
-            # index HeroCourse.course already carries.
-            #
-            # `is_active` is deliberately not part of this. It decides whether a
-            # course is featured as a curated pick; `new_until` decides whether
-            # it is badged. A retired pick with a future date still badges its
-            # course wherever that course reaches the hero.
             is_new=Exists(
                 HeroCourse.objects.filter(
                     course_id=OuterRef("course_id"),
-                    # Inclusive, matching the help_text's promise that the badge
-                    # shows up to and including the chosen date. A null
-                    # `new_until` never matches, so "blank means no badge" needs
-                    # no special case. localdate rather than now().date() so the
-                    # cutoff agrees with the date the admin showed the staff
-                    # member who set it, were TIME_ZONE ever moved off UTC.
                     new_until__gte=timezone.localdate(),
                 )
             ),
@@ -439,11 +402,8 @@ class HeroCourseListAPIView(ListAPIView):
         if not course_ids:
             return []
 
-        # A `course_id__in` filter returns rows in whatever order the database
-        # chooses, so the caller's ordering has to be reapplied here. Courses
-        # with no EnhancedCourse row — those published before this plugin was
-        # installed — simply drop out, which is why the caller looks at more
-        # enrollments than it needs.
+        # course_id__in doesn't preserve order, so it's reapplied here. Courses
+        # with no EnhancedCourse row just drop out.
         rows = {row.course_id: row for row in queryset.filter(course_id__in=course_ids)}
         return [rows[course_id] for course_id in course_ids if course_id in rows]
 
@@ -459,8 +419,8 @@ class HeroCourseListAPIView(ListAPIView):
         Returns:
             list[EnhancedCourse]: At most HERO_COURSE_COUNT courses.
         """
-        # A course can be both a recent enrollment and a curated pick, and the
-        # hero would then show the same card twice.
+        # Skip a curated pick if the learner is already enrolled in it, so the
+        # same course never fills two card slots.
         seen = {course.course_id for course in courses}
         for extra in extras:
             if len(courses) >= HERO_COURSE_COUNT:
