@@ -277,6 +277,9 @@ class HeroCourseListAPIView(ListAPIView):
     date that has not passed, whichever route the card took into the hero — a
     curated pick or the caller's own enrollment.
 
+    A card also reports `is_enrolled`: true for a card sourced from the
+    caller's own enrollments, false for a curated pick they have not joined.
+
     Method:
         GET
 
@@ -288,7 +291,8 @@ class HeroCourseListAPIView(ListAPIView):
                 "image_url": "https://yourdomain.com/../course_image.jpg",
                 "provider_name": "Provider Name",
                 "provider_logo": "https://yourdomain.com/../provider_logo.png",
-                "is_new": false
+                "is_new": false,
+                "is_enrolled": false
             },
             ...
         ]
@@ -341,7 +345,12 @@ class HeroCourseListAPIView(ListAPIView):
 
         # No visibility filter here: the user is already enrolled, so their own
         # course should show even if it's unlisted from the public catalog.
-        return self._in_key_order(self._enhanced_courses(), course_ids)[:HERO_COURSE_COUNT]
+        courses = self._in_key_order(self._enhanced_courses(), course_ids)[:HERO_COURSE_COUNT]
+
+        for course in courses:
+            course.is_enrolled = True
+
+        return courses
 
     def _curated(self):
         """
@@ -363,7 +372,12 @@ class HeroCourseListAPIView(ListAPIView):
             course__visible_to_staff_only=False,
             course__catalog_visibility=CATALOG_VISIBILITY_CATALOG_AND_ABOUT,
         )
-        return self._in_key_order(queryset, course_ids)
+        courses = self._in_key_order(queryset, course_ids)
+
+        for course in courses:
+            course.is_enrolled = False
+
+        return courses
 
     @staticmethod
     def _enhanced_courses():

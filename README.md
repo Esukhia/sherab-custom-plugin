@@ -207,7 +207,7 @@ courses. Provides partner/center detail pages and a mobile-app JSON API.
 | GET | `/api/partners/` | Mobile-app JSON of partner-organization mappings. |
 | GET | `/api/partners/homepage/` | All partners, for the homepage schools-and-partners carousel. |
 | GET | `/api/categories/homepage/` | Homepage course categories, each with its visible courses. |
-| GET | `/api/courses/hero/` | Courses for the homepage hero cards. Personalized: a signed-in caller gets their most recent enrollments, newest first, with curated `HeroCourse` picks filling any leftover slot; a signed-out caller gets the curated picks alone. Each card also reports `is_new`, true while the course's `HeroCourse.new_until` date has not passed. |
+| GET | `/api/courses/hero/` | Courses for the homepage hero cards. Personalized: a signed-in caller gets their most recent enrollments, newest first, with curated `HeroCourse` picks filling any leftover slot; a signed-out caller gets the curated picks alone. Each card also reports `is_new` (true while the course's `HeroCourse.new_until` date has not passed) and `is_enrolled` (true for a card sourced from the caller's own enrollments, false for a curated pick they have not joined). |
 
 ### Management commands
 
